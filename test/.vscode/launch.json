@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "name": "Test",
+            "type": "node",
+            "request": "launch",
+            "runtimeExecutable": "bash",
+            "runtimeArgs": ["-c", "env | grep -E '^(TEST|OP)_'"],
+            "console": "integratedTerminal",
+            "env": {
+                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        }
+    ]
+}

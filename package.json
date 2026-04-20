@@ -1,0 +1,112 @@
+{
+    "name": "vscode-secret-resolver",
+    "displayName": "Secret Resolver",
+    "description": "Resolves 1Password secret references in VS Code launch configuration environment variables",
+    "version": "1.0.0-dev",
+    "releaseRefPrefix": "v",
+    "releaseBranchSuffix": "-dev",
+    "packageManager": "pnpm@10.33.0",
+    "preview": true,
+    "publisher": "jochenseeber",
+    "license": "MIT",
+    "icon": "images/icon.png",
+    "galleryBanner": {
+        "color": "#fffbeb",
+        "theme": "light"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/jochenseeber/vscode-secret-resolver"
+    },
+    "bugs": {
+        "url": "https://github.com/jochenseeber/vscode-secret-resolver/issues"
+    },
+    "homepage": "https://github.com/jochenseeber/vscode-secret-resolver#readme",
+    "qna": "marketplace",
+    "keywords": [
+        "1password",
+        "secrets",
+        "env",
+        "environment",
+        "debug",
+        "op",
+        "launch"
+    ],
+    "engines": {
+        "vscode": "^1.116.0",
+        "node": ">=20",
+        "pnpm": ">=10 <11"
+    },
+    "categories": [
+        "Debuggers"
+    ],
+    "capabilities": {
+        "untrustedWorkspaces": {
+            "supported": "limited",
+            "description": "Resolves op:// references from launch configurations. Only enable in workspaces you trust — launch configs can reference secrets from any vault the signed-in op CLI can read."
+        },
+        "virtualWorkspaces": false
+    },
+    "activationEvents": [
+        "onDebug"
+    ],
+    "main": "./build/extension.js",
+    "contributes": {
+        "configuration": {
+            "title": "Secret Resolver",
+            "properties": {
+                "secretResolver.opPath": {
+                    "type": "string",
+                    "default": "op",
+                    "description": "Path to the 1Password CLI binary. Looked up on PATH when unqualified."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "clean": "shx rm -rf build pkg",
+        "generate:icon": "tsx scripts/generate-icon.ts",
+        "compile": "tsc --project tsconfig.json",
+        "watch": "tsc --watch --project tsconfig.json",
+        "check:lint": "eslint .",
+        "compile:tests": "tsc --project tsconfig.test.json",
+        "pretest": "pnpm run compile && pnpm run compile:tests",
+        "test": "pnpm run test:unit && pnpm run test:integration",
+        "test:unit": "mocha --ui tdd 'build/test/test/unit/**/*.test.js'",
+        "test:integration": "vscode-test",
+        "vscode:prepublish": "pnpm run clean && pnpm run compile && shx mkdir -p pkg",
+        "package": "pnpm exec vsce package --no-dependencies --out pkg/$npm_package_name-$npm_package_version.vsix",
+        "format": "pnpm run format:dprint && pnpm run format:eslint",
+        "format:dprint": "pnpm exec dprint fmt",
+        "format:eslint": "pnpm exec eslint . --fix",
+        "check:format": "pnpm exec dprint check",
+        "update:format": "pnpm exec dprint config update",
+        "verify": "pnpm run compile && pnpm run check:lint && pnpm run check:format && pnpm run test",
+        "changelog": "tsx scripts/changelog.ts",
+        "release": "tsx scripts/release.ts"
+    },
+    "devDependencies": {
+        "@stylistic/eslint-plugin": "^5.10.0",
+        "@tabler/icons": "^3.41.1",
+        "@types/mocha": "^10.0.10",
+        "@types/node": "^20.19.39",
+        "@types/vscode": "^1.116.0",
+        "@vscode/test-cli": "^0.0.10",
+        "@vscode/test-electron": "^2.5.2",
+        "@vscode/vsce": "^3.9.1",
+        "conventional-changelog": "^7.2.0",
+        "conventional-changelog-conventionalcommits": "^9.3.1",
+        "dprint": "^0.54.0",
+        "eslint": "^9.39.4",
+        "mocha": "^10.8.2",
+        "ovsx": "^0.10.11",
+        "@resvg/resvg-js": "^2.6.2",
+        "shx": "^0.4.0",
+        "tsx": "^4.21.0",
+        "typescript": "^5.9.3",
+        "typescript-eslint": "^8.59.0"
+    },
+    "dependencies": {
+        "@vscode/debugprotocol": "^1.68.0"
+    }
+}

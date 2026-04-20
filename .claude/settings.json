@@ -1,0 +1,63 @@
+{
+    "permissions": {
+        "allow": [
+            "mcp__plugin_serena_serena__activate_project",
+            "mcp__plugin_serena_serena__initial_instructions",
+            "mcp__plugin_serena_serena__check_onboarding_performed",
+            "mcp__plugin_serena_serena__onboarding",
+            "mcp__plugin_serena_serena__list_dir",
+            "mcp__plugin_serena_serena__write_memory"
+        ]
+    },
+    "enabledPlugins": {
+        "claude-code-setup@claude-plugins-official": true,
+        "claude-md-management@claude-plugins-official": true,
+        "code-simplifier@claude-plugins-official": true,
+        "context7@claude-plugins-official": true,
+        "ralph-loop@claude-plugins-official": true,
+        "serena@claude-plugins-official": true,
+        "superpowers@claude-plugins-official": true
+    },
+    "sandbox": {
+        "enabled": true,
+        "failIfUnavailable": true,
+        "allowUnsandboxedCommands": false,
+        "network": {
+            "allowedDomains": [
+                "github.com",
+                "api.github.com",
+                "raw.githubusercontent.com",
+                "uploads.github.com",
+                "objects.githubusercontent.com",
+                "codeload.github.com",
+                "plugins.dprint.dev",
+                "registry.npmjs.org"
+            ]
+        },
+        "filesystem": {
+            "allowWrite": [
+                "~/Library/Caches/dprint",
+                "~/Library/pnpm",
+                "~/Library/Caches/pnpm"
+            ],
+            "denyRead": [
+                "~/"
+            ],
+            "allowRead": [
+                ".",
+                "~/.claude",
+                "~/.config/gh",
+                "~/.config/git",
+                "~/.config/vsrun",
+                "~/.gitconfig",
+                "~/.local/bin",
+                "~/.npmrc",
+                "~/.rbenv",
+                "~/CLAUDE.md",
+                "~/Library/Caches/dprint",
+                "~/Library/Caches/pnpm",
+                "~/Library/pnpm/store"
+            ]
+        }
+    }
+}

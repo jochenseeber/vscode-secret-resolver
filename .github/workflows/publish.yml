@@ -1,0 +1,108 @@
+name: Publish
+
+on:
+  push:
+    # Tag filters are static. Match any non-slash prefix that ends with a
+    # numeric X.Y.Z suffix, then exclude SemVer pre-release suffixes here.
+    # Runtime validation below still enforces package.json releaseRefPrefix.
+    tags:
+      - "*[0-9]+.[0-9]+.[0-9]+"
+      - "!*[0-9]+.[0-9]+.[0-9]+-*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      OPENVSX_TOKEN: ${{ secrets.OPENVSX_TOKEN }}
+      IS_PRERELEASE: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      # Require the configured prefix, then treat any remaining hyphen in the
+      # version as a SemVer pre-release suffix such as 1.0.0-rc.1.
+      - name: Detect pre-release
+        run: |
+          prefix="$(node -p "require('./package.json').releaseRefPrefix")"
+          if [[ "$GITHUB_REF_NAME" != "$prefix"* ]]; then
+            echo "Tag $GITHUB_REF_NAME does not start with expected prefix $prefix" >&2
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#"$prefix"}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag $GITHUB_REF_NAME does not end with a supported SemVer version" >&2
+            exit 1
+          fi
+          if [[ "$version" == *-* ]]; then
+            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+          fi
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run check:lint
+
+      - run: xvfb-run -a pnpm run test
+        env:
+          DISPLAY: ":99"
+
+      - name: Package extension
+        run: pnpm run package ${{ env.IS_PRERELEASE == 'true' && '-- --pre-release' || '' }}
+
+      - name: Validate tag version
+        run: |
+          prefix="$(node -p "require('./package.json').releaseRefPrefix")"
+          if [[ "$GITHUB_REF_NAME" != "$prefix"* ]]; then
+            echo "Tag $GITHUB_REF_NAME does not start with expected prefix $prefix" >&2
+            exit 1
+          fi
+          tag_version="${GITHUB_REF_NAME#"$prefix"}"
+          if [[ ! "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag $GITHUB_REF_NAME does not end with a supported SemVer version" >&2
+            exit 1
+          fi
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "Tag version $tag_version does not match package.json version $package_version" >&2
+            exit 1
+          fi
+
+      - name: Resolve VSIX path
+        id: vsix
+        run: |
+          shopt -s nullglob
+          files=(pkg/*.vsix)
+          if [[ "${#files[@]}" -ne 1 ]]; then
+            echo "Expected exactly one VSIX in pkg/, found ${#files[@]}" >&2
+            printf '%s\n' "${files[@]}" >&2
+            exit 1
+          fi
+          echo "path=${files[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        run: gh release create "$GITHUB_REF_NAME" "$VSIX_PATH" --generate-notes ${{ env.IS_PRERELEASE == 'true' && '--prerelease' || '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VSIX_PATH: ${{ steps.vsix.outputs.path }}
+
+      - name: Publish to VS Code Marketplace
+        run: pnpm exec vsce publish --no-dependencies ${{ env.IS_PRERELEASE == 'true' && '--pre-release' || '' }} --packagePath "$VSIX_PATH" --pat "$AZURE_DEVOPS_TOKEN"
+        env:
+          AZURE_DEVOPS_TOKEN: ${{ secrets.AZURE_DEVOPS_TOKEN }}
+          VSIX_PATH: ${{ steps.vsix.outputs.path }}
+
+      - name: Publish to Open VSX
+        run: pnpm exec ovsx publish "$VSIX_PATH" ${{ env.IS_PRERELEASE == 'true' && '--pre-release' || '' }} --pat "$OPENVSX_TOKEN"
+        env:
+          VSIX_PATH: ${{ steps.vsix.outputs.path }}
