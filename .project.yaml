@@ -1,0 +1,5 @@
+name: vscode-secret-resolver
+facets:
+  - git
+  - typescript
+  - vscode-extension

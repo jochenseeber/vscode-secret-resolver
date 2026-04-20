@@ -1,0 +1,24 @@
+version: "0.2"
+language: en
+dictionaries:
+  - project-dictionary
+dictionaryDefinitions:
+  - name: project-dictionary
+    path: ./cspell.dict
+    addWords: true
+ignoreRegExpList:
+  - '/\\[a-zA-Z]/g'
+  - '/op:\/\/\S+/g'
+ignorePaths:
+  - .claude
+  - .git
+  - .playwright-mcp
+  - .pnpm-store
+  - .tmp
+  - .vscode-test
+  - build
+  - node_modules
+  - pkg
+  - pnpm-lock.yaml
+  - tmp
+  - "*.vsix"

@@ -1,0 +1,75 @@
+name: Ship
+
+on:
+  push:
+    # Tag filters are static. Match any non-slash prefix that ends with a
+    # numeric X.Y.Z suffix, then exclude SemVer pre-release suffixes here.
+    # Runtime validation below still enforces package.json releaseRefPrefix.
+    tags:
+      - "*[0-9]+.[0-9]+.[0-9]+"
+      - "!*[0-9]+.[0-9]+.[0-9]+-*"
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      IS_PRERELEASE: ""
+    steps:
+      - uses: actions/checkout@v6
+
+      # Require the configured prefix, then treat any remaining hyphen in the
+      # version as a SemVer pre-release suffix such as 1.0.0-rc.1.
+      - name: Detect pre-release
+        run: |
+          prefix="$(node -p "require('./package.json').releaseRefPrefix")"
+          if [[ "$GITHUB_REF_NAME" != "$prefix"* ]]; then
+            echo "Tag $GITHUB_REF_NAME does not start with expected prefix $prefix" >&2
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#"$prefix"}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag $GITHUB_REF_NAME does not end with a supported SemVer version" >&2
+            exit 1
+          fi
+          if [[ "$version" == *-* ]]; then
+            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+          fi
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 25
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run check:lint
+
+      - run: xvfb-run -a pnpm run test
+        env:
+          DISPLAY: ":99"
+
+      - name: Package extension
+        run: pnpm run package ${{ env.IS_PRERELEASE == 'true' && '-- --pre-release' || '' }}
+
+      - name: Create GitHub release
+        run: pnpm run ship:github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to VS Code Marketplace
+        run: pnpm run ship:marketplace
+        env:
+          AZURE_DEVOPS_TOKEN: ${{ secrets['AZURE_DEVOPS_TOKEN'] }}
+
+      - name: Publish to Open VSX
+        run: pnpm run ship:openvsx
+        env:
+          OPENVSX_TOKEN: ${{ secrets['OPENVSX_TOKEN'] }}

@@ -1,0 +1,30 @@
+{
+    "recommendations": [
+        "1password.op-vscode",
+        "adamerose.markdown-wysiwyg",
+        "andyyaldoo.vscode-json",
+        "anthropic.claude-code",
+        "axelrindle.task-explorer",
+        "bierner.markdown-mermaid",
+        "davidanson.vscode-markdownlint",
+        "deerawan.vscode-dash",
+        "dnut.rewrap-revived",
+        "editorconfig.editorconfig",
+        "formulahendry.code-runner",
+        "foxundermoon.shell-format",
+        "jebbs.plantuml",
+        "mermaidchart.vscode-mermaid-chart",
+        "mutantdino.resourcemonitor",
+        "shipitsmarter.vscode-change-naming-convention",
+        "streetsidesoftware.code-spell-checker",
+        "streetsidesoftware.code-spell-checker-german",
+        "yzhang.markdown-all-in-one",
+        "dprint.dprint",
+        "donjayamanne.githistory",
+        "eamodio.gitlens",
+        "mhutchie.git-graph",
+        "sanjulaganepola.github-local-actions",
+        "amatiasq.sort-imports",
+        "dbaeumer.vscode-eslint"
+    ]
+}
