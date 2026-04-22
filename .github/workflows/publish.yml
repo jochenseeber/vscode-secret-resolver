@@ -40,7 +40,7 @@ jobs:
             echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
           fi
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.33.0
 
