@@ -89,7 +89,7 @@
         "@stylistic/eslint-plugin": "^5.10.0",
         "@tabler/icons": "^3.41.1",
         "@types/mocha": "^10.0.10",
-        "@types/node": "^20.19.39",
+        "@types/node": "^25.6.0",
         "@types/vscode": "^1.116.0",
         "@vscode/test-cli": "^0.0.10",
         "@vscode/test-electron": "^2.5.2",
