@@ -18,7 +18,7 @@ jobs:
       OPENVSX_TOKEN: ${{ secrets.OPENVSX_TOKEN }}
       IS_PRERELEASE: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Require the configured prefix, then treat any remaining hyphen in the
       # version as a SemVer pre-release suffix such as 1.0.0-rc.1.
