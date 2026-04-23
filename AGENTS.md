@@ -72,6 +72,9 @@ and `console: "integratedTerminal"`.
   `package.json` version writes, targeted file formatting for script-managed
   files, publish preflight loading, GitHub auth detection, VSIX resolution, and
   `runEntrypoint`.
+- `writeVersion()` also keeps `package.json` `preview` synchronized with the
+  target version: prerelease/`-dev` versions are preview builds, stable
+  versions are not.
 - `scripts/ship-github.ts` accepts either `GH_TOKEN` or an existing `gh`
   authentication session. It uses `gh release create --verify-tag`, so manual
   GitHub shipping requires the release tag to already exist on the remote.

@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ const ESLINT_FILE_RE = /\.(?:[cm]?[jt]sx?)$/i;
 export interface PackageJson {
     name: string;
     version: string;
+    preview: boolean;
     releaseRefPrefix: string;
     releaseBranchSuffix: string;
 }
@@ -22,23 +23,36 @@ export function readPackageJson(): PackageJson {
 
 export function writeVersion(version: string): void {
     const raw = readFileSync(PKG_PATH, "utf8");
-    const match = /("version"\s*:\s*")([^"]+)(")/.exec(raw);
+    const versionMatch = /("version"\s*:\s*")([^"]+)(")/.exec(raw);
+    const previewMatch = /("preview"\s*:\s*)(true|false)/.exec(raw);
+    const preview = shouldPreviewVersion(version);
 
-    if (!match) {
+    if (!versionMatch) {
         throw new Error(`Could not find version field in ${PKG_PATH}.`);
     }
 
-    if (match[2] === version) {
+    if (!previewMatch) {
+        throw new Error(`Could not find preview field in ${PKG_PATH}.`);
+    }
+
+    if (versionMatch[2] === version && previewMatch[2] === String(preview)) {
         return;
     }
 
-    const updated = raw.replace(
-        /("version"\s*:\s*")[^"]+(")/,
-        `$1${version}$2`,
-    );
+    const updated = raw
+        .replace(
+            /("version"\s*:\s*")[^"]+(")/,
+            `$1${version}$2`,
+        )
+        .replace(
+            /("preview"\s*:\s*)(true|false)/,
+            `$1${preview}`,
+        );
 
     if (updated === raw) {
-        throw new Error(`Failed to update package.json version to ${version}.`);
+        throw new Error(
+            `Failed to update package.json version/preview metadata for ${version}.`,
+        );
     }
 
     writeFormattedTextFile(PKG_PATH, updated);
@@ -78,6 +92,10 @@ export function parsePrerelease(version: string): PrereleaseInfo {
         isPrerelease: prerelease !== null,
         isDev: prerelease === "dev",
     };
+}
+
+export function shouldPreviewVersion(version: string): boolean {
+    return parsePrerelease(version).isPrerelease;
 }
 
 export function releaseTag(pkg: PackageJson = readPackageJson()): string {

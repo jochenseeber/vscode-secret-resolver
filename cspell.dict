@@ -22,5 +22,6 @@ unsandboxed
 vsce
 vsix
 vsrun
+worktree
 worktrees
 yarnrc

@@ -117,7 +117,9 @@ pnpm run ship              # ship:github + ship:marketplace + ship:openvsx
 `pnpm run release` creates the release commit and local tag first, then bumps
 the release branch to the next patch `-dev` version. When run on `main`, it
 also bumps `main` to the next `-dev` version. Release refs use `vX.Y.Z` tags
-and `vX.Y-dev` branches.
+and `vX.Y-dev` branches. The release automation also keeps `package.json`
+`preview` aligned with the version channel: prerelease and `-dev` versions set
+it to `true`, stable releases set it to `false`.
 
 ### Publishing
 
