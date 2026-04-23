@@ -2,7 +2,7 @@
     "name": "vscode-secret-resolver",
     "displayName": "Secret Resolver",
     "description": "Resolves 1Password secret references in VS Code launch configuration environment variables",
-    "version": "1.0.0",
+    "version": "1.0.1-dev",
     "releaseRefPrefix": "v",
     "releaseBranchSuffix": "-dev",
     "packageManager": "pnpm@10.33.0",
