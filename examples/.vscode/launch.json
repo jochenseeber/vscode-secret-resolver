@@ -103,6 +103,33 @@
             "envFile": "${workspaceFolder}/.env"
         },
         {
+            "name": "Test Node Launch: Integrated Terminal (signal-on-stop term+kill)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "console": "integratedTerminal",
+            "env": {
+                "SECRET_RESOLVER_SIGNAL_ON_STOP": "int+15:kill",
+                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Java Launch: Integrated Terminal (signal-on-stop term+kill)",
+            "type": "java",
+            "request": "launch",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch.java",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "env": {
+                "SECRET_RESOLVER_SIGNAL_ON_STOP": "int+15:kill",
+                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
             "name": "Test Java Launch: Integrated Terminal (no op references)",
             "type": "java",
             "request": "launch",

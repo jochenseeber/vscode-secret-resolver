@@ -128,6 +128,81 @@ export function parseSecretResolverMode(
     return consoleKind === "internalConsole" ? "cache" : "op";
 }
 
+export const DEFAULT_STEP_DELAY_SECONDS = 30;
+
+export type SignalName = "TERM" | "KILL" | "INT" | "HUP";
+
+const SIGNAL_NAMES: ReadonlySet<SignalName> = new Set(["TERM", "KILL", "INT", "HUP"]);
+
+export interface SignalStep {
+    delaySec: number;
+    signal: SignalName;
+}
+
+const STEP_PATTERN = /^(?:([0-9]+):)?([a-zA-Z]+)$/;
+
+/**
+ * Parses `SECRET_RESOLVER_SIGNAL_ON_STOP` into an ordered list of signal
+ * steps. Format: `(([0-9]+:)?SIGNAL)(+(([0-9]+:)?SIGNAL))*` where SIGNAL is
+ * one of TERM, KILL, INT, HUP (case-insensitive). An optional `N:` prefix on
+ * each step sets the delay in seconds before that signal is sent; the default
+ * is 0 for the first step and `DEFAULT_STEP_DELAY_SECONDS` for all others.
+ * Returns `null` for missing / empty / `"off"` values or on any parse error
+ * (with `console.warn`).
+ */
+export function parseSignalOnStop(
+    value: string | null | undefined,
+): SignalStep[] | null {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const trimmed = value.trim();
+
+    if (trimmed === "" || trimmed.toLowerCase() === "off") {
+        return null;
+    }
+
+    const tokens = trimmed.split("+");
+    const steps: SignalStep[] = [];
+
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i].trim();
+        const match = STEP_PATTERN.exec(token);
+
+        if (match === null) {
+            console.warn(
+                `[secret-resolver] invalid SECRET_RESOLVER_SIGNAL_ON_STOP token ${
+                    JSON.stringify(token)
+                }; defaulting to off`,
+            );
+            return null;
+        }
+
+        const delayStr = match[1];
+        const signalStr = match[2].toUpperCase() as SignalName;
+
+        if (!SIGNAL_NAMES.has(signalStr)) {
+            console.warn(
+                `[secret-resolver] unknown signal ${
+                    JSON.stringify(signalStr)
+                } in SECRET_RESOLVER_SIGNAL_ON_STOP; defaulting to off`,
+            );
+            return null;
+        }
+
+        const delaySec = delayStr !== undefined
+            ? Number(delayStr)
+            : i === 0
+            ? 0
+            : DEFAULT_STEP_DELAY_SECONDS;
+
+        steps.push({ delaySec, signal: signalStr });
+    }
+
+    return steps.length > 0 ? steps : null;
+}
+
 /**
  * Merges an envFile map (parsed externally) with an inline-env map. Inline
  * values win on key collision, matching VS Code's documented native behavior

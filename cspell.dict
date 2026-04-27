@@ -1,9 +1,13 @@
 # Project-specific words, one per line (lowercase singular form)
 ciphertext
+cppdbg
 debuggee
 debugprotocol
+distros
+ENOENT
 envfile
 esbuild
+HMAC
 hmac'd
 jochen
 jochenseeber
@@ -13,11 +17,13 @@ nullglob
 openvsx
 opsec
 ovsx
+pgid
 resvg
 rsvg
 seeber
 shopt
 tabler
+tmpfs
 unsandboxed
 vsce
 vsix

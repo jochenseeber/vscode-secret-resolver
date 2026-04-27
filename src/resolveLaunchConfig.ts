@@ -6,7 +6,9 @@ import {
     findOpRefs,
     mergeEnv,
     parseSecretResolverMode,
+    parseSignalOnStop,
     replaceOpRefs,
+    type SignalStep,
     type StringEnvMap,
     stripInternalEnvVars,
 } from "./envHelpers";
@@ -14,6 +16,18 @@ import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectR
 import type { SecretCache } from "./secretCache";
 
 const MODE_VAR = "SECRET_RESOLVER_MODE";
+const SIGNAL_ON_STOP_VAR = "SECRET_RESOLVER_SIGNAL_ON_STOP";
+
+/**
+ * Custom field attached to the returned `DebugConfiguration` so the tracker
+ * can read the parsed signal config via `session.configuration`. The field
+ * name is intentionally non-DAP and is only set when the feature is in use.
+ */
+export const SECRET_RESOLVER_CONFIG_FIELD = "__secretResolver";
+
+export interface SecretResolverSessionConfig {
+    steps: SignalStep[];
+}
 
 const TERMINAL_CONSOLES = new Set([
     "integratedTerminal",
@@ -113,6 +127,17 @@ export async function resolveLaunchConfig(
 
     if ("envFile" in next) {
         delete next.envFile;
+    }
+
+    const signalOnStop = parseSignalOnStop(
+        typeof merged[SIGNAL_ON_STOP_VAR] === "string"
+            ? (merged[SIGNAL_ON_STOP_VAR] as string)
+            : null,
+    );
+
+    if (signalOnStop !== null && TERMINAL_CONSOLES.has(consoleKind)) {
+        const sessionConfig: SecretResolverSessionConfig = { steps: signalOnStop };
+        (next as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] = sessionConfig;
     }
 
     return next;

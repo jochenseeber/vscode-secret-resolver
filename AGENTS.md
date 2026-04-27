@@ -37,7 +37,10 @@ activation by checking the dir's `.pid` file against live PIDs.
 - `src/envHelpers.ts` — Pure helpers, no `vscode` import. `OP_REF_PATTERN`,
   `findOpRefs`, `hasOpRef`, `replaceOpRefs`, `stripInternalEnvVars` (regex
   `/^SECRET_RESOLVER_/`), `parseSecretResolverMode` (returns `"op" | "cache"`),
-  `mergeEnv`.
+  `parseSignalOnStop` (returns `SignalStep[] | null`, where `SignalStep` is
+  `{ delaySec: number; signal: SignalName }` and `SignalName` is
+  `"TERM" | "KILL" | "INT" | "HUP"`; `null` means off),
+  `DEFAULT_STEP_DELAY_SECONDS` (30), `mergeEnv`.
 - `src/launchRewrite.ts` — Pure helpers: `isRunInTerminalRequest` (DAP type
   guard) and
   `buildOpRunArgs(opPath, envFilePath, args) →
@@ -64,17 +67,42 @@ activation by checking the dir's `.pid` file against live PIDs.
   winning, read `SECRET_RESOLVER_MODE` (console-aware default: `"cache"` for
   `internalConsole`, `"op"` otherwise), strip every `SECRET_RESOLVER_*` key,
   branch to op-run/cache path, replace `config.env`, delete `config.envFile`.
+  When `SECRET_RESOLVER_SIGNAL_ON_STOP` is set on a terminal launch, parse it
+  into a `SignalStep[]` and attach `{ steps }` to the returned config under
+  `SECRET_RESOLVER_CONFIG_FIELD` (`"__secretResolver"`) for the tracker to
+  read.
 - `src/configProvider.ts` — `SecretDebugConfigurationProvider` — `vscode`-aware
   wrapper that bridges `CancellationToken` → `AbortSignal`, reads
   `secretResolver.opPath` from configuration, and routes user messages through
   `vscode.window`. Calls into `resolveLaunchConfig`.
+- `src/processTree.ts` — Process-tree helpers for signal-on-stop. `ProcessInfo`
+  (`pid`, `ppid`, `command`), `GetProcessTreeFn` interface,
+  `defaultGetProcessTree` (uses `pidtree` with `{ root: true, advanced: true }`
+  and resolves commands via `/proc/<pid>/cmdline` on Linux or a single `ps`
+  call on macOS/BSD; returns `[]` on any error), `isOpRunCommand` (detects an
+  `op run` invocation by basename of argv0 + argv1). Consumed by
+  `debugAdapterProxy.ts` to locate the `op run` wrapper in the process tree and
+  identify its direct children.
 - `src/debugAdapterProxy.ts` — Per-session tracker. On every `runInTerminal`
   request whose env has at least one non-null entry, the tracker writes the env
   to a `0600` dotenv file inside a `0700` `mkdtemp` dir under `os.tmpdir()`,
   drops a `.pid` file alongside (used by the activation sweep), rewrites
   `arguments.args` via `buildOpRunArgs`, and clears `arguments.env`. Cleanup
-  runs on `onWillStopSession` and `onExit`. Also defines the `TempDirRegistry`
-  interface the factory accepts; the extension owns the implementation.
+  runs on `onWillStopSession` and `onExit`. Defines the `TempDirRegistry`
+  interface the factory accepts; the extension owns the implementation. When
+  the session config carries `__secretResolver`, the tracker also captures the
+  spawned PID from the `runInTerminal` response (`shellProcessId` preferred
+  since the shell is the process-group leader; falls back to `processId` when
+  the shell PID is absent), tracks DAP `exited` events, and on the DAP
+  `disconnect` request — when `terminateDebuggee !== false` — iterates the
+  `SignalStep[]` sequence: each step waits `delaySec` seconds then signals the
+  direct children of the `op run` wrapper via `kill(pid, sig)`. Only one timer
+  is active at a time; `cancelPendingKill` cancels it when the program exits
+  naturally (DAP `exited` event) or on extension shutdown (`onExit`). Session
+  stop (`onWillStopSession`) does NOT cancel, allowing the sequence to continue
+  across session teardown. Detach (`terminateDebuggee: false`) is a no-op. The
+  factory accepts an injectable `KillFn` plus timer hooks so unit tests can
+  stub `process.kill` and `setTimeout`.
 - `src/tempDirRegistry.ts` — `InMemoryTempDirRegistry`, `cleanupRegistry`
   (synchronous, safe from `process.on('exit'|signals)`), and
   `sweepStaleTempDirs` (activation-time scan of `os.tmpdir()` for
@@ -120,6 +148,16 @@ sees them:
     `console: "internalConsole"`, `"op"` for every other console.
   - Unknown non-empty values emit a `console.warn` and fall through to the same
     console-aware default.
+- `SECRET_RESOLVER_SIGNAL_ON_STOP` — a `+`-separated sequence of signal steps.
+  Each step: optional `N:` delay prefix (seconds; default 0 for the first step,
+  30 for subsequent steps), then a signal name (`TERM`, `KILL`, `INT`, `HUP`;
+  case-insensitive). `"off"` or empty means no signaling (default). When set on
+  a terminal launch, the resolver attaches a `__secretResolver: { steps }`
+  field to the returned `DebugConfiguration`. The tracker reads it via
+  `session.configuration` and dispatches the step sequence on the DAP
+  `disconnect` request when `terminateDebuggee !== false`. Detach is a no-op.
+  Ignored for `internalConsole`. Unknown / unparsable values warn and produce
+  no signaling.
 
 ## Non-goals (v1)
 
@@ -148,11 +186,13 @@ yet released a fix, prefer a minimal root `package.json` `pnpm.overrides` entry
 and refresh `pnpm-lock.yaml` rather than adding a direct dependency that does
 not control the vulnerable subtree.
 
-Unit tests live in `test/unit/` and cover the pure modules: `envHelpers`,
-`dotenv`, `launchRewrite`, `secretCache`, `opInject`, and
-`resolveLaunchConfig`. The resolver's unit test injects a fake `OpInjectRunner`
-and a fake `parseEnvFile` to exercise every branch of the decision tree without
-touching the real 1Password CLI or filesystem. Integration tests live in
+Unit tests live in `test/unit/` and cover: `envHelpers`, `dotenv`,
+`launchRewrite`, `secretCache`, `opInject`, `processTree`, and
+`resolveLaunchConfig`. The `resolveLaunchConfig` tests live in
+`resolveLaunchConfig.test.ts`; `configProvider.ts` itself has no unit test. The
+`resolveLaunchConfig` suite injects a fake `OpInjectRunner` and a fake
+`parseEnvFile` to exercise every branch of the decision tree without touching
+the real 1Password CLI or filesystem. Integration tests live in
 `test/integration/`; the `.vscode-test.mjs` config pins the VS Code version to
 match `engines.vscode` in `package.json`.
 

@@ -6,8 +6,15 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { DebugProtocol } from "@vscode/debugprotocol";
-import { SecretDebugAdapterTrackerFactory, type TempDirRegistry } from "../../src/debugAdapterProxy";
+import {
+    type GetProcessTreeFn,
+    type KillFn,
+    type ProcessInfo,
+    SecretDebugAdapterTrackerFactory,
+    type TempDirRegistry,
+} from "../../src/debugAdapterProxy";
 import { parseEnvFile } from "../../src/dotenv";
+import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../../src/resolveLaunchConfig";
 import {
     cleanupRegistry,
     InMemoryTempDirRegistry,
@@ -15,13 +22,164 @@ import {
     TEMP_DIR_PREFIX,
 } from "../../src/tempDirRegistry";
 
+interface KillCall {
+    pid: number;
+    signal: NodeJS.Signals | number;
+}
+
+interface ScheduledTimer {
+    id: NodeJS.Timeout;
+    cb: () => void;
+    ms: number;
+    canceled: boolean;
+}
+
+function makeTrackerWithStubs(opts?: {
+    registry?: TempDirRegistry;
+    sessionConfig?: SecretResolverSessionConfig;
+    descendantsByRoot?: Map<number, ProcessInfo[]>;
+}): {
+    tracker: vscode.DebugAdapterTracker | undefined;
+    kills: KillCall[];
+    timers: ScheduledTimer[];
+    descendantsByRoot: Map<number, ProcessInfo[]>;
+    fireTimer: (idx: number) => void;
+} {
+    const registry = opts?.registry ?? new InMemoryTempDirRegistry();
+    const kills: KillCall[] = [];
+    const timers: ScheduledTimer[] = [];
+    const descendantsByRoot = opts?.descendantsByRoot ?? new Map();
+
+    const kill: KillFn = (pid, signal) => {
+        kills.push({ pid, signal });
+    };
+
+    const setKillTimer = (cb: () => void, ms: number): NodeJS.Timeout => {
+        const id = {} as NodeJS.Timeout;
+        timers.push({ id, cb, ms, canceled: false });
+        return id;
+    };
+
+    const clearKillTimer = (handle: NodeJS.Timeout) => {
+        for (const t of timers) {
+            if (t.id === handle) {
+                t.canceled = true;
+            }
+        }
+    };
+
+    const getDescendants: GetProcessTreeFn = async (root) => descendantsByRoot.get(root) ?? [];
+
+    const session = {
+        configuration: opts?.sessionConfig
+            ? { [SECRET_RESOLVER_CONFIG_FIELD]: opts.sessionConfig }
+            : {},
+    } as unknown as vscode.DebugSession;
+    const tracker = new SecretDebugAdapterTrackerFactory(
+        registry,
+        kill,
+        setKillTimer,
+        clearKillTimer,
+        getDescendants,
+    ).createDebugAdapterTracker(session) as
+        | vscode.DebugAdapterTracker
+        | undefined;
+
+    const fireTimer = (idx: number) => {
+        const t = timers[idx];
+
+        if (t && !t.canceled) {
+            t.cb();
+        }
+    };
+
+    return { tracker, kills, timers, descendantsByRoot, fireTimer };
+}
+
 function makeTracker(
     registry: TempDirRegistry = new InMemoryTempDirRegistry(),
 ): vscode.DebugAdapterTracker | undefined {
     return new SecretDebugAdapterTrackerFactory(registry)
-        .createDebugAdapterTracker({} as vscode.DebugSession) as
+        .createDebugAdapterTracker({
+            configuration: {},
+        } as unknown as vscode.DebugSession) as
             | vscode.DebugAdapterTracker
             | undefined;
+}
+
+function makeResponse(
+    body: { processId?: number; shellProcessId?: number },
+): DebugProtocol.RunInTerminalResponse {
+    return {
+        seq: 2,
+        type: "response",
+        request_seq: 1,
+        success: true,
+        command: "runInTerminal",
+        body,
+    };
+}
+
+function makeDisconnectRequest(
+    args?: { terminateDebuggee?: boolean },
+): DebugProtocol.DisconnectRequest {
+    return {
+        seq: 3,
+        type: "request",
+        command: "disconnect",
+        arguments: args,
+    };
+}
+
+function makeExitedEvent(): DebugProtocol.ExitedEvent {
+    return {
+        seq: 4,
+        type: "event",
+        event: "exited",
+        body: { exitCode: 0 },
+    };
+}
+
+/**
+ * Flushes the microtask queue (and one event-loop tick) so async work
+ * kicked off by a sync DAP hook — e.g. `signalProcessTree` after a
+ * `disconnect` request — has a chance to run before assertions.
+ */
+function flush(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Builds the standard wrapping topology: shell → op run → program(s).
+ * The tree is what `getProcessTree(shellPid)` returns; the tracker walks
+ * it, finds the `op run` wrapper, and signals its direct children.
+ */
+function makeWrappedTree(opts: {
+    shellPid: number;
+    opPid: number;
+    children: { pid: number; command: string }[];
+    shellCommand?: string;
+    opCommand?: string;
+}): ProcessInfo[] {
+    const tree: ProcessInfo[] = [
+        {
+            pid: opts.shellPid,
+            ppid: 1,
+            command: opts.shellCommand ?? "/bin/bash",
+        },
+        {
+            pid: opts.opPid,
+            ppid: opts.shellPid,
+            command: opts.opCommand
+                ?? "/opt/homebrew/bin/op run --env-file=/tmp/x -- java TestJavaLaunch",
+        },
+    ];
+
+    for (const child of opts.children) {
+        tree.push({ pid: child.pid, ppid: opts.opPid, command: child.command });
+    }
+
+    return tree;
 }
 
 function makeRequest(
@@ -406,6 +564,571 @@ suite("runtime integration", () => {
         });
 
         cleanupRegistry(registry);
+    });
+
+    test("signal-on-stop: sends SIGTERM to descendants on disconnect", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills, timers } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+            descendantsByRoot: new Map([[
+                4242,
+                makeWrappedTree({
+                    shellPid: 4242,
+                    opPid: 8000,
+                    children: [{ pid: 9000, command: "java TestJavaLaunch" }],
+                }),
+            ]]),
+        });
+        assert.ok(tracker);
+
+        tracker.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }]);
+        assert.strictEqual(timers.length, 0);
+    });
+
+    test("signal-on-stop: signals only direct children of the op run wrapper", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+            descendantsByRoot: new Map([[
+                4242,
+                [
+                    // Shell at the root (skipped: not a child of op run).
+                    { pid: 4242, ppid: 1, command: "/bin/bash" },
+                    // op run wrapper itself (skipped: it's the parent we
+                    // walk *from*, not a target).
+                    {
+                        pid: 8000,
+                        ppid: 4242,
+                        command: "/opt/homebrew/bin/op run -- java",
+                    },
+                    // Direct child of op run — this is the target.
+                    {
+                        pid: 9000,
+                        ppid: 8000,
+                        command: "java TestJavaLaunch",
+                    },
+                    // A grandchild of op run — NOT a direct child, so not
+                    // signaled.
+                    { pid: 9100, ppid: 9000, command: "java helper" },
+                ],
+            ]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }]);
+    });
+
+    test("signal-on-stop: prefers shellProcessId (the runInTerminal shell) over processId", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "KILL" }] },
+            descendantsByRoot: new Map([
+                [
+                    4242,
+                    makeWrappedTree({
+                        shellPid: 4242,
+                        opPid: 8000,
+                        children: [{ pid: 9000, command: "java" }],
+                    }),
+                ],
+                [
+                    555,
+                    makeWrappedTree({
+                        shellPid: 555,
+                        opPid: 7000,
+                        children: [{ pid: 9999, command: "java" }],
+                    }),
+                ],
+            ]),
+        });
+
+        tracker?.onWillReceiveMessage?.(
+            makeResponse({ processId: 555, shellProcessId: 4242 }),
+        );
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        // Walked from shellProcessId (4242), so 9000 — not 9999 — is signaled.
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGKILL" }]);
+    });
+
+    test("signal-on-stop: falls back to processId when shellProcessId is absent", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "KILL" }] },
+            descendantsByRoot: new Map([[
+                555,
+                // The root we capture is `op run` itself; it has the program
+                // as its direct child. The shell is not in the walked tree.
+                [
+                    {
+                        pid: 555,
+                        ppid: 4242,
+                        command: "/opt/homebrew/bin/op run -- java",
+                    },
+                    { pid: 9000, ppid: 555, command: "java" },
+                ],
+            ]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ processId: 555 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGKILL" }]);
+    });
+
+    test("signal-on-stop: warns and skips when no op run wrapper is in the tree", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+            descendantsByRoot: new Map([[
+                4242,
+                [
+                    { pid: 4242, ppid: 1, command: "/bin/bash" },
+                    { pid: 9000, ppid: 4242, command: "java" },
+                ],
+            ]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, []);
+    });
+
+    test("signal-on-stop: detach (terminateDebuggee=false) does not signal", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: false }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, []);
+    });
+
+    test("signal-on-stop: omitted terminateDebuggee defaults to terminate", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+            descendantsByRoot: new Map([[
+                4242,
+                makeWrappedTree({
+                    shellPid: 4242,
+                    opPid: 8000,
+                    children: [{ pid: 9000, command: "java" }],
+                }),
+            ]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(makeDisconnectRequest());
+
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }]);
+    });
+
+    test("signal-on-stop: term+kill schedules SIGKILL after the grace period", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const tree = makeWrappedTree({
+            shellPid: 4242,
+            opPid: 8000,
+            children: [{ pid: 9000, command: "java" }],
+        });
+        const { tracker, kills, timers, fireTimer } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }, { delaySec: 5, signal: "KILL" }] },
+            descendantsByRoot: new Map([[4242, tree]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }]);
+        assert.strictEqual(timers.length, 1);
+        assert.strictEqual(timers[0].ms, 5000);
+
+        fireTimer(0);
+        await flush();
+
+        assert.deepStrictEqual(kills, [
+            { pid: 9000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGKILL" },
+        ]);
+    });
+
+    test("signal-on-stop: term+kill re-walks the tree at SIGKILL time", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const descendantsByRoot = new Map<number, ProcessInfo[]>([[
+            4242,
+            makeWrappedTree({
+                shellPid: 4242,
+                opPid: 8000,
+                children: [{ pid: 9000, command: "java" }],
+            }),
+        ]]);
+        const { tracker, kills, fireTimer } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }, { delaySec: 5, signal: "KILL" }] },
+            descendantsByRoot,
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+        await flush();
+        // Between SIGTERM and the grace timer firing, op run forks a helper.
+        descendantsByRoot.set(
+            4242,
+            makeWrappedTree({
+                shellPid: 4242,
+                opPid: 8000,
+                children: [
+                    { pid: 9000, command: "java" },
+                    { pid: 9001, command: "java forked-helper" },
+                ],
+            }),
+        );
+        fireTimer(0);
+        await flush();
+
+        assert.deepStrictEqual(kills, [
+            { pid: 9000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGKILL" },
+            { pid: 9001, signal: "SIGKILL" },
+        ]);
+    });
+
+    test("signal-on-stop: exited event before disconnect cancels the signal", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }, { delaySec: 5, signal: "KILL" }] },
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onDidSendMessage?.(makeExitedEvent());
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, []);
+    });
+
+    test("signal-on-stop: exited event during grace period cancels SIGKILL", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills, timers, fireTimer } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }, { delaySec: 5, signal: "KILL" }] },
+            descendantsByRoot: new Map([[
+                4242,
+                makeWrappedTree({
+                    shellPid: 4242,
+                    opPid: 8000,
+                    children: [{ pid: 9000, command: "java" }],
+                }),
+            ]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+        await flush();
+        // Program exits naturally before grace period elapses.
+        tracker?.onDidSendMessage?.(makeExitedEvent());
+
+        assert.strictEqual(timers[0].canceled, true);
+        fireTimer(0); // No-op because canceled.
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }]);
+    });
+
+    test("signal-on-stop: no signal when session config is absent", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            // sessionConfig intentionally omitted -> "off" / feature disabled
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, []);
+    });
+
+    test("signal-on-stop: no PID captured -> no signal", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+        });
+
+        // No runInTerminal response observed; only a disconnect arrives.
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, []);
+    });
+
+    test("signal-on-stop: ESRCH from kill is swallowed silently", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const registry = new InMemoryTempDirRegistry();
+        const kills: KillCall[] = [];
+
+        const kill: KillFn = (pid, signal) => {
+            kills.push({ pid, signal });
+            const err = new Error("no such process") as NodeJS.ErrnoException;
+            err.code = "ESRCH";
+            throw err;
+        };
+
+        const getDescendants: GetProcessTreeFn = async (root) =>
+            root === 4242
+                ? [
+                    { pid: 4242, ppid: 1, command: "/bin/bash" },
+                    { pid: 8000, ppid: 4242, command: "op run -- java" },
+                    { pid: 9000, ppid: 8000, command: "java" },
+                ]
+                : [];
+
+        const session = {
+            configuration: {
+                [SECRET_RESOLVER_CONFIG_FIELD]: {
+                    steps: [{ delaySec: 0, signal: "TERM" }],
+                } as SecretResolverSessionConfig,
+            },
+        } as unknown as vscode.DebugSession;
+        const tracker = new SecretDebugAdapterTrackerFactory(
+            registry,
+            kill,
+            setTimeout,
+            clearTimeout,
+            getDescendants,
+        )
+            .createDebugAdapterTracker(session) as
+                | vscode.DebugAdapterTracker
+                | undefined;
+
+        // Should not throw even though the kill stub raises ESRCH.
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }]);
+    });
+
+    test("signal-on-stop: onWillStopSession does not cancel pending kill timer", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, timers } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }, { delaySec: 5, signal: "KILL" }] },
+            descendantsByRoot: new Map([[
+                4242,
+                makeWrappedTree({
+                    shellPid: 4242,
+                    opPid: 8000,
+                    children: [{ pid: 9000, command: "java" }],
+                }),
+            ]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+        await flush();
+        assert.strictEqual(timers[0].canceled, false);
+
+        (
+            tracker as
+                | (vscode.DebugAdapterTracker & {
+                    onWillStopSession?: () => void;
+                })
+                | undefined
+        )?.onWillStopSession?.();
+
+        // Timer must survive session stop so multi-step sequences can complete.
+        assert.strictEqual(timers[0].canceled, false);
+
+        tracker?.onExit?.(0, undefined);
+
+        assert.strictEqual(timers[0].canceled, true);
+    });
+
+    test("signal-on-stop: SIGINT is forwarded correctly", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "INT" }] },
+            descendantsByRoot: new Map([[
+                4242,
+                makeWrappedTree({
+                    shellPid: 4242,
+                    opPid: 8000,
+                    children: [{ pid: 9000, command: "node app.js" }],
+                }),
+            ]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGINT" }]);
+    });
+
+    test("signal-on-stop: SIGHUP is forwarded correctly", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "HUP" }] },
+            descendantsByRoot: new Map([[
+                4242,
+                makeWrappedTree({
+                    shellPid: 4242,
+                    opPid: 8000,
+                    children: [{ pid: 9000, command: "node app.js" }],
+                }),
+            ]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGHUP" }]);
+    });
+
+    test("signal-on-stop: leading delaySec fires timer before first signal", async () => {
+        if (process.platform === "win32") {
+            return;
+        }
+
+        const { tracker, kills, timers, fireTimer } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 10, signal: "TERM" }] },
+            descendantsByRoot: new Map([[
+                4242,
+                makeWrappedTree({
+                    shellPid: 4242,
+                    opPid: 8000,
+                    children: [{ pid: 9000, command: "java" }],
+                }),
+            ]]),
+        });
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }));
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        );
+
+        await flush();
+
+        // Signal not sent yet — waiting for the leading delay timer.
+        assert.deepStrictEqual(kills, []);
+        assert.strictEqual(timers.length, 1);
+        assert.strictEqual(timers[0].ms, 10_000);
+
+        fireTimer(0);
+        await flush();
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }]);
     });
 });
 

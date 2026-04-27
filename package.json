@@ -85,7 +85,7 @@
         "pretest": "pnpm run compile && pnpm run compile:tests",
         "test": "pnpm run test:unit && pnpm run test:integration",
         "test:unit": "mocha --ui tdd 'build/test/test/unit/**/*.test.js'",
-        "test:integration": "vscode-test",
+        "test:integration": "pnpm run compile && vscode-test",
         "vscode:prepublish": "pnpm run clean && pnpm run compile && shx mkdir -p pkg",
         "package": "pnpm exec vsce package --no-dependencies --out pkg/$npm_package_name-$npm_package_version.vsix",
         "format": "pnpm run format:dprint && pnpm run format:eslint",
@@ -102,6 +102,7 @@
         "ship": "pnpm run ship:github && pnpm run ship:marketplace && pnpm run ship:openvsx"
     },
     "devDependencies": {
+        "@resvg/resvg-js": "^2.6.2",
         "@stylistic/eslint-plugin": "^5.10.0",
         "@tabler/icons": "^3.41.1",
         "@types/mocha": "^10.0.10",
@@ -116,13 +117,13 @@
         "eslint": "^10.2.1",
         "mocha": "^11.7.5",
         "ovsx": "^0.10.11",
-        "@resvg/resvg-js": "^2.6.2",
         "shx": "^0.4.0",
         "tsx": "^4.21.0",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.59.0"
     },
     "dependencies": {
-        "@vscode/debugprotocol": "^1.68.0"
+        "@vscode/debugprotocol": "^1.68.0",
+        "pidtree": "^0.6.0"
     }
 }

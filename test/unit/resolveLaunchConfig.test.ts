@@ -2,7 +2,12 @@ import * as assert from "node:assert";
 
 import type { StringEnvMap } from "../../src/envHelpers";
 import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectRunner } from "../../src/opInject";
-import { type ResolveDeps, resolveLaunchConfig } from "../../src/resolveLaunchConfig";
+import {
+    type ResolveDeps,
+    resolveLaunchConfig,
+    SECRET_RESOLVER_CONFIG_FIELD,
+    type SecretResolverSessionConfig,
+} from "../../src/resolveLaunchConfig";
 import { SecretCache } from "../../src/secretCache";
 
 class FakeRunner implements OpInjectRunner {
@@ -369,5 +374,116 @@ suite("resolveLaunchConfig", () => {
         const result = await resolveLaunchConfig(config, deps);
         assert.strictEqual(result, undefined);
         assert.match(recorder.errors[0], /did not return values for/);
+    });
+
+    test("attaches __secretResolver session config when SIGNAL_ON_STOP is set on a terminal launch", async () => {
+        const { deps } = makeDeps({});
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_SIGNAL_ON_STOP: "TERM+5:KILL",
+            },
+        };
+        const result = await resolveLaunchConfig(config, deps);
+        assert.ok(result);
+
+        const sessionConfig = (result as Record<string, unknown>)[
+            SECRET_RESOLVER_CONFIG_FIELD
+        ] as SecretResolverSessionConfig | undefined;
+        assert.deepStrictEqual(sessionConfig, {
+            steps: [
+                { delaySec: 0, signal: "TERM" },
+                { delaySec: 5, signal: "KILL" },
+            ],
+        });
+        // Internal env vars are still stripped from `env`.
+        assert.deepStrictEqual(result?.env, { FOO: "bar" });
+    });
+
+    test("uses DEFAULT_STEP_DELAY_SECONDS when no explicit delay between steps", async () => {
+        const { deps } = makeDeps({});
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_SIGNAL_ON_STOP: "TERM+KILL",
+            },
+        };
+        const result = await resolveLaunchConfig(config, deps);
+        const sessionConfig = (result as Record<string, unknown>)[
+            SECRET_RESOLVER_CONFIG_FIELD
+        ] as SecretResolverSessionConfig | undefined;
+        assert.deepStrictEqual(sessionConfig, {
+            steps: [
+                { delaySec: 0, signal: "TERM" },
+                { delaySec: 30, signal: "KILL" },
+            ],
+        });
+    });
+
+    test("does not attach __secretResolver when SIGNAL_ON_STOP is unset", async () => {
+        const { deps } = makeDeps({});
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: { FOO: "bar" },
+        };
+        const result = await resolveLaunchConfig(config, deps);
+        assert.ok(result);
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        );
+    });
+
+    test("does not attach __secretResolver when SIGNAL_ON_STOP is 'off'", async () => {
+        const { deps } = makeDeps({});
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_SIGNAL_ON_STOP: "off",
+            },
+        };
+        const result = await resolveLaunchConfig(config, deps);
+        assert.ok(result);
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        );
+    });
+
+    test("does not attach __secretResolver for internalConsole", async () => {
+        const runner = new FakeRunner();
+        runner.nextResult = new Map();
+        const { deps } = makeDeps({ runner });
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_SIGNAL_ON_STOP: "TERM+KILL",
+            },
+        };
+        const result = await resolveLaunchConfig(config, deps);
+        assert.ok(result);
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        );
     });
 });

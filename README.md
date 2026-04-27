@@ -1,47 +1,7 @@
 # Secret Resolver for VS Code
 
 A VS Code extension that resolves 1Password secret references
-(`op://VaultName/ItemID/field`) in debug-launch environment variables. The
-per-launch `SECRET_RESOLVER_MODE` env var picks the path: `"op"` hands the env
-to `op run` to resolve at exec time; `"cache"` runs `op inject` in-process and
-keeps the resolved plaintext, obfuscated, in memory for the duration of your VS
-Code session. The default is console-aware: `internalConsole` defaults to
-`"cache"` (it has no terminal for `op run` to wrap), every other console
-defaults to `"op"`. For terminal consoles (`integratedTerminal`,
-`externalTerminal`) the env never appears in the DAP `runInTerminal` payload —
-the tracker writes it to a `0600` temp file under `os.tmpdir()` and rewrites
-the spawn args to `op run --env-file=<file> -- <orig args>`. Explicitly setting
-`SECRET_RESOLVER_MODE="op"` on a `console: "internalConsole"` launch aborts the
-launch with an error.
-
-## Features
-
-- Resolves `op://` references in `env` and `envFile` for every console mode,
-  including `internalConsole`.
-- For terminal consoles, the launch env is written to a `0600` temp file inside
-  an `0700` temp dir under `os.tmpdir()`, never flowing through DAP
-  `arguments.env` plaintext. The tracker rewrites the spawn args to
-  `op run --env-file=<file> -- <orig args>`. The temp dir is removed when the
-  debug session ends; leftovers from crashed sessions are swept on next
-  activation.
-- For `internalConsole` (or when `SECRET_RESOLVER_MODE="cache"`), batches every
-  reference into a single `op inject` invocation and caches resolved values in
-  memory, obfuscated with a per-session key (HMAC-SHA256 cache keys +
-  AES-256-GCM values). The cache clears when you run
-  `Secret Resolver: Clear Cache`, change `secretResolver.opPath`, or reload the
-  window.
-- Strips every `SECRET_RESOLVER_*` env var before the launch so internal flags
-  never reach the program.
-- Per-launch knob (`SECRET_RESOLVER_MODE` = `"op"` or `"cache"`) picks the
-  resolution path. Default is `"cache"` for `internalConsole` and `"op"` for
-  every other console.
-
-## Requirements
-
-- [1Password CLI](https://1password.com/downloads/command-line/) installed
-- Signed in (`op signin`), or 1Password service account token set in
-  `OP_SERVICE_ACCOUNT_TOKEN`
-- POSIX shell environment. Windows is not supported.
+(`op://VaultName/ItemID/field`) in debug-launch environment variables.
 
 ## Usage
 
@@ -68,30 +28,21 @@ Reference secrets in `env` and/or `envFile` in your `launch.json`:
 ```
 
 Before the debug adapter receives the launch, the extension parses any
-`envFile` and merges it with the inline `env` (inline wins on conflicts). What
-happens next depends on `SECRET_RESOLVER_MODE` and the launch's `console`:
+`envFile` and merges it with the inline `env` (inline wins on conflicts). There
+are two resolution modes which work as follows:
 
-- **Terminal console, default or `SECRET_RESOLVER_MODE="op"`**: `op://`
-  references are left in the env. The tracker writes the env to a `0600` temp
-  dotenv file and rewrites the spawn args to
-  `op run --env-file=<file> -- <orig args>`. The 1Password CLI resolves the
-  references at exec time.
-- **Terminal console, `SECRET_RESOLVER_MODE="cache"`**: `op://` references are
-  collected, `op inject` is invoked once for the missing ones, and the resolved
-  plaintext is written to the same kind of temp file. The tracker still wraps
-  the launch in `op run --env-file`; `op run` finds no refs and acts as a
-  pass-through env loader.
-- **`internalConsole`, default or `SECRET_RESOLVER_MODE="cache"`**: `op inject`
-  runs in-extension and the adapter receives the resolved plaintext directly
-  via `config.env`. No terminal involved, no temp file.
-- **`internalConsole`, `SECRET_RESOLVER_MODE="op"`**: rejected. The resolver
-  shows an error and aborts the launch — `op run` requires a terminal-style
-  spawn. Drop the explicit `"op"` (the default for `internalConsole` is already
-  `"cache"`) or change `console` to `integratedTerminal` / `externalTerminal`.
-
-If `op inject` cannot resolve a reference (CLI not signed in, missing
-permission, typo) the cache-path launch is aborted and the error is shown as a
-notification — no raw `op://` strings ever reach the program.
+- **`op` mode** — `op://` references are left in the env as-is. The tracker
+  writes the merged env to a `0600` temp dotenv file and rewrites the spawn
+  args to `op run --env-file=<file> -- <orig args>`. The 1Password CLI resolves
+  the references at exec time. This mode is supported for `console` settings
+  `integratedTerminal` and `externalTerminal`.
+- **`cache` mode** — `op://` references are collected, `op inject` is invoked
+  once for the missing ones, and resolved plaintext is cached in-memory for the
+  session. For terminal consoles the tracker still writes the resolved env to a
+  temp file and wraps the launch in `op run --env-file`; `op run` finds no refs
+  and acts as a pass-through env loader. For `internalConsole` the adapter
+  receives the resolved plaintext directly via `config.env`. This mode is
+  supported for all `console` types.
 
 ### Switching modes per launch
 
@@ -113,6 +64,47 @@ unknown value, which also emits a warning to the extension host console) the
 default is console-derived: `"cache"` for `console: "internalConsole"` and
 `"op"` otherwise.
 
+### Signaling the program when the user clicks Stop
+
+For `integratedTerminal` and `externalTerminal` launches the debug adapter
+typically just detaches when the user clicks Stop — the spawned program keeps
+running in the terminal. A per-launch env var makes the extension itself signal
+the program in that case:
+
+Set `SECRET_RESOLVER_SIGNAL_ON_STOP` to a `+`-separated sequence of signal
+steps. Each step is an optional decimal delay in seconds followed by `:`, then
+a signal name (`TERM`, `KILL`, `INT`, `HUP`; case-insensitive). When the delay
+is omitted it defaults to **0** for the first step and **30 s** for each
+subsequent step. `"off"` or empty disables signaling (default). Unknown or
+unparsable values warn and fall back to off.
+
+Examples: `"TERM"` (SIGTERM immediately), `"TERM+KILL"` (SIGTERM, then SIGKILL
+after 30 s), `"TERM+5:KILL"` (SIGTERM, then SIGKILL after 5 s),
+`"INT+10:TERM+KILL"` (SIGINT, wait 10 s, SIGTERM, wait 30 s, SIGKILL).
+
+```json
+{
+    "console": "integratedTerminal",
+    "env": {
+        "SECRET_RESOLVER_SIGNAL_ON_STOP": "TERM+KILL",
+        "DATABASE_URL": "op://Development/Database/connection-string"
+    }
+}
+```
+
+Notes:
+
+- Only Stop signals; detach (`terminateDebuggee: false` on the DAP `disconnect`
+  request) never signals.
+- If the program exits naturally before the next step in the sequence is due,
+  no further signal is sent.
+- Terminal modes only — the tracker walks the process tree from the spawned
+  shell PID, locates the `op run` wrapper(s), and signals only their direct
+  children (the actual program). The `op run` wrapper and the hosting shell are
+  left alone and exit naturally when their child does.
+- `internalConsole` is not affected; the debug adapter terminates it cleanly.
+- The flag is stripped from the program's env before launch.
+
 ## Configuration
 
 - `secretResolver.opPath` (string, default `"op"`) — path to the 1Password CLI
@@ -125,6 +117,13 @@ default is console-derived: `"cache"` for `console: "internalConsole"` and
 - `Secret Resolver: Clear Cache` — drops every cached resolved value and
   rotates the in-memory session key. Use after rotating a vault item if you
   want the next launch to fetch a fresh value without reloading the window.
+
+## Requirements
+
+- [1Password CLI](https://1password.com/downloads/command-line/) installed
+- Signed in (`op signin`), or 1Password service account token set in
+  `OP_SERVICE_ACCOUNT_TOKEN`
+- POSIX shell environment. Windows is not supported.
 
 ## Security & Privacy
 

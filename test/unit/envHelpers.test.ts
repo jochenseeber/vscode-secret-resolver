@@ -1,14 +1,33 @@
 import * as assert from "node:assert";
 
 import {
+    DEFAULT_STEP_DELAY_SECONDS,
     findOpRefs,
     hasOpRef,
     isOpRef,
     mergeEnv,
     parseSecretResolverMode,
+    parseSignalOnStop,
     replaceOpRefs,
     stripInternalEnvVars,
 } from "../../src/envHelpers";
+
+function captureWarnings<T>(body: () => T): { warnings: unknown[][]; result: T } {
+    const original = console.warn;
+    const warnings: unknown[][] = [];
+
+    console.warn = (...args: unknown[]) => {
+        warnings.push(args);
+    };
+
+    try {
+        const result = body();
+        return { warnings, result };
+    }
+    finally {
+        console.warn = original;
+    }
+}
 
 suite("isOpRef", () => {
     test("recognizes an op:// value", () => {
@@ -229,5 +248,89 @@ suite("mergeEnv", () => {
         mergeEnv(fileMap, inlineMap);
         assert.deepStrictEqual(fileMap, fileSnap);
         assert.deepStrictEqual(inlineMap, inlineSnap);
+    });
+});
+
+suite("parseSignalOnStop", () => {
+    test("single signal returns one step with delaySec 0", () => {
+        assert.deepStrictEqual(parseSignalOnStop("TERM"), [
+            { delaySec: 0, signal: "TERM" },
+        ]);
+    });
+
+    test("two signals without explicit delay use 0 for first, DEFAULT_STEP_DELAY_SECONDS for second", () => {
+        assert.deepStrictEqual(parseSignalOnStop("TERM+KILL"), [
+            { delaySec: 0, signal: "TERM" },
+            { delaySec: DEFAULT_STEP_DELAY_SECONDS, signal: "KILL" },
+        ]);
+    });
+
+    test("explicit delay overrides the default for a subsequent step", () => {
+        assert.deepStrictEqual(parseSignalOnStop("TERM+5:KILL"), [
+            { delaySec: 0, signal: "TERM" },
+            { delaySec: 5, signal: "KILL" },
+        ]);
+    });
+
+    test("leading delay applies to the first step", () => {
+        assert.deepStrictEqual(parseSignalOnStop("10:INT"), [
+            { delaySec: 10, signal: "INT" },
+        ]);
+    });
+
+    test("all four signal names are accepted", () => {
+        for (const sig of ["TERM", "KILL", "INT", "HUP"] as const) {
+            const result = parseSignalOnStop(sig);
+            assert.deepStrictEqual(result, [{ delaySec: 0, signal: sig }]);
+        }
+    });
+
+    test("is case-insensitive", () => {
+        assert.deepStrictEqual(parseSignalOnStop("term+kill"), [
+            { delaySec: 0, signal: "TERM" },
+            { delaySec: DEFAULT_STEP_DELAY_SECONDS, signal: "KILL" },
+        ]);
+        assert.deepStrictEqual(parseSignalOnStop("Int"), [
+            { delaySec: 0, signal: "INT" },
+        ]);
+    });
+
+    test("three-step sequence", () => {
+        assert.deepStrictEqual(parseSignalOnStop("INT+10:TERM+30:KILL"), [
+            { delaySec: 0, signal: "INT" },
+            { delaySec: 10, signal: "TERM" },
+            { delaySec: 30, signal: "KILL" },
+        ]);
+    });
+
+    test("missing or empty values return null", () => {
+        assert.strictEqual(parseSignalOnStop(undefined), null);
+        assert.strictEqual(parseSignalOnStop(null), null);
+        assert.strictEqual(parseSignalOnStop(""), null);
+        assert.strictEqual(parseSignalOnStop("   "), null);
+    });
+
+    test("'off' (case-insensitive) returns null", () => {
+        assert.strictEqual(parseSignalOnStop("off"), null);
+        assert.strictEqual(parseSignalOnStop("OFF"), null);
+        assert.strictEqual(parseSignalOnStop(" Off "), null);
+    });
+
+    test("unknown signal name warns and returns null", () => {
+        const { warnings, result } = captureWarnings(() => [
+            parseSignalOnStop("SIGTERM"),
+            parseSignalOnStop("USR1"),
+        ]);
+        assert.deepStrictEqual(result, [null, null]);
+        assert.strictEqual(warnings.length, 2);
+    });
+
+    test("malformed token warns and returns null", () => {
+        const { warnings, result } = captureWarnings(() => [
+            parseSignalOnStop("TERM+:KILL"),
+            parseSignalOnStop("TERM+1.5:KILL"),
+        ]);
+        assert.deepStrictEqual(result, [null, null]);
+        assert.strictEqual(warnings.length, 2);
     });
 });
