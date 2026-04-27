@@ -1,6 +1,6 @@
 import * as assert from "node:assert";
 
-import { isRunInTerminalRequest, prependOpRun } from "../../src/launchRewrite";
+import { buildOpRunArgs, isRunInTerminalRequest } from "../../src/launchRewrite";
 
 suite("isRunInTerminalRequest", () => {
     test("accepts a well-formed runInTerminal request", () => {
@@ -85,39 +85,63 @@ suite("isRunInTerminalRequest", () => {
     });
 });
 
-suite("prependOpRun", () => {
-    test("prepends the op path, run, and -- separator", () => {
+suite("buildOpRunArgs", () => {
+    test("wraps the args with op run --env-file and a -- separator", () => {
         assert.deepStrictEqual(
-            prependOpRun(["node", "app.js"], "op"),
-            ["op", "run", "--", "node", "app.js"],
+            buildOpRunArgs("op", "/tmp/sr/env", ["node", "app.js"]),
+            ["op", "run", "--env-file=/tmp/sr/env", "--", "node", "app.js"],
         );
     });
 
     test("honors an absolute op path", () => {
         assert.deepStrictEqual(
-            prependOpRun(["python", "-m", "svc"], "/opt/homebrew/bin/op"),
-            ["/opt/homebrew/bin/op", "run", "--", "python", "-m", "svc"],
+            buildOpRunArgs(
+                "/opt/homebrew/bin/op",
+                "/tmp/sr/env",
+                ["python", "-m", "svc"],
+            ),
+            [
+                "/opt/homebrew/bin/op",
+                "run",
+                "--env-file=/tmp/sr/env",
+                "--",
+                "python",
+                "-m",
+                "svc",
+            ],
         );
     });
 
     test("handles an empty args array", () => {
         assert.deepStrictEqual(
-            prependOpRun([], "op"),
-            ["op", "run", "--"],
+            buildOpRunArgs("op", "/tmp/sr/env", []),
+            ["op", "run", "--env-file=/tmp/sr/env", "--"],
         );
     });
 
     test("does not mutate the input args", () => {
         const input = ["node", "app.js"];
         const snapshot = [...input];
-        prependOpRun(input, "op");
+        buildOpRunArgs("op", "/tmp/sr/env", input);
         assert.deepStrictEqual(input, snapshot);
     });
 
     test("preserves arg values verbatim (no quoting or escaping)", () => {
         assert.deepStrictEqual(
-            prependOpRun(["echo", "hello world", "a'b\"c"], "op"),
-            ["op", "run", "--", "echo", "hello world", "a'b\"c"],
+            buildOpRunArgs("op", "/tmp/sr/env", [
+                "echo",
+                "hello world",
+                "a'b\"c",
+            ]),
+            [
+                "op",
+                "run",
+                "--env-file=/tmp/sr/env",
+                "--",
+                "echo",
+                "hello world",
+                "a'b\"c",
+            ],
         );
     });
 });

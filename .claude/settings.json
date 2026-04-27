@@ -30,14 +30,15 @@
                 "~/.config/git",
                 "~/.config/vsrun",
                 "~/.gitconfig",
+                "~/.gitignore_global",
                 "~/.local/bin",
                 "~/.npmrc",
                 "~/.rbenv",
+                "~/.vscode/argv.json",
                 "~/CLAUDE.md",
                 "~/Library/Caches/dprint",
                 "~/Library/Caches/pnpm",
-                "~/Library/pnpm/store",
-                "~/.vscode/argv.json"
+                "~/Library/pnpm/store"
             ],
             "allowWrite": [
                 "~/Library/Caches/dprint",

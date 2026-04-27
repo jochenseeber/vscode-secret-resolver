@@ -1,4 +1,8 @@
 {
+    "[git-commit]": {
+        "editor.defaultFormatter": "dprint.dprint",
+        "editor.tabSize": 2
+    },
     "[javascript]": {
         "editor.defaultFormatter": "dprint.dprint"
     },
@@ -41,9 +45,6 @@
     "editor.insertSpaces": true,
     "editor.tabSize": 4,
     "js/ts.format.semicolons": "remove",
-    "markdownlint.ignore": [
-        "**/.serena/**"
-    ],
     "json.schemaDownload.trustedDomains": {
         "https://dprint.dev/": true,
         "https://json-schema.org/": true,
@@ -51,5 +52,8 @@
         "https://raw.githubusercontent.com/microsoft/vscode/": true,
         "https://schemastore.azurewebsites.net/": true,
         "https://www.schemastore.org/": true
-    }
+    },
+    "markdownlint.ignore": [
+        "**/.serena/**"
+    ]
 }

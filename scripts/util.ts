@@ -1,5 +1,5 @@
-import { dirname, relative, resolve } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";

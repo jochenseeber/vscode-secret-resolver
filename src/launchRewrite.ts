@@ -19,11 +19,15 @@ export function isRunInTerminalRequest(
 }
 
 /**
- * Returns a new args array with `[opPath, "run", "--"]` prepended.
+ * Returns the runInTerminal argv that wraps the launch in
+ * `op run --env-file=<envFilePath> -- <orig args>`. The env file is
+ * expected to live for at least the duration of the spawned `op run`
+ * invocation; cleanup is the caller's responsibility.
  */
-export function prependOpRun(
-    args: readonly string[],
+export function buildOpRunArgs(
     opPath: string,
+    envFilePath: string,
+    args: readonly string[],
 ): string[] {
-    return [opPath, "run", "--", ...args];
+    return [opPath, "run", `--env-file=${envFilePath}`, "--", ...args];
 }
