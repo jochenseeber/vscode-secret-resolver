@@ -1,9 +1,9 @@
-import { loadPublishContext, requireEnv, run, runEntrypoint } from "./util.ts";
+import { loadPublishContext, requireEnv, run, runEntrypoint } from "./util.ts"
 
 export function shipMarketplace(): void {
-    const token = requireEnv("AZURE_DEVOPS_TOKEN");
+    const token = requireEnv("AZURE_DEVOPS_TOKEN")
 
-    const { vsix, isPrerelease } = loadPublishContext();
+    const { vsix, isPrerelease } = loadPublishContext()
 
     const args = [
         "exec",
@@ -12,10 +12,10 @@ export function shipMarketplace(): void {
         "--no-dependencies",
         "--packagePath",
         vsix,
-    ];
-    if (isPrerelease) args.push("--pre-release");
+    ]
+    if (isPrerelease) args.push("--pre-release")
 
-    run("pnpm", args, { VSCE_PAT: token });
+    run("pnpm", args, { VSCE_PAT: token })
 }
 
-runEntrypoint(import.meta.url, shipMarketplace);
+runEntrypoint(import.meta.url, shipMarketplace)

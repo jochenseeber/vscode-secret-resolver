@@ -1,13 +1,40 @@
-import { assertGithubAuth, loadPublishContext, run, runEntrypoint } from "./util.ts";
+import {
+    assertGithubAuth,
+    assertPublishable,
+    parsePrerelease,
+    readPackageJson,
+    releaseTag,
+    run,
+    runEntrypoint,
+} from "./util.js"
 
-export function shipGithub(): void {
-    assertGithubAuth();
+import { existsSync, readdirSync, statSync } from "node:fs"
+import { join, resolve } from "node:path"
 
-    const { tag, vsix, isPrerelease } = loadPublishContext();
-    const args = ["release", "create", tag, vsix, "--generate-notes", "--verify-tag"];
-    if (isPrerelease) args.push("--prerelease");
+const PKG_DIR = resolve(process.cwd(), "pkg")
 
-    run("gh", args);
+function listAssets(): string[] {
+    if (!existsSync(PKG_DIR)) return []
+
+    return readdirSync(PKG_DIR)
+        .map((name) => join(PKG_DIR, name))
+        .filter((path) => statSync(path).isFile())
 }
 
-runEntrypoint(import.meta.url, shipGithub);
+export function shipGithub(): void {
+    assertGithubAuth()
+
+    const pkg = readPackageJson()
+    assertPublishable(pkg)
+
+    const tag = releaseTag(pkg)
+    const assets = listAssets()
+    const { isPrerelease } = parsePrerelease(pkg.version)
+
+    const args = ["release", "create", tag, ...assets, "--generate-notes", "--verify-tag"]
+    if (isPrerelease) args.push("--prerelease")
+
+    run("gh", args)
+}
+
+runEntrypoint(import.meta.url, shipGithub)

@@ -1,4 +1,4 @@
-import { DebugProtocol } from "@vscode/debugprotocol";
+import { DebugProtocol } from "@vscode/debugprotocol"
 
 /**
  * Type guard for a DAP `runInTerminal` request. Narrows `unknown` to
@@ -9,13 +9,13 @@ export function isRunInTerminalRequest(
     message: unknown,
 ): message is DebugProtocol.RunInTerminalRequest {
     if (typeof message !== "object" || message === null) {
-        return false;
+        return false
     }
 
-    const m = message as Partial<DebugProtocol.RunInTerminalRequest>;
+    const m = message as Partial<DebugProtocol.RunInTerminalRequest>
     return m.type === "request"
         && m.command === "runInTerminal"
-        && Array.isArray(m.arguments?.args);
+        && Array.isArray(m.arguments?.args)
 }
 
 /**
@@ -29,5 +29,5 @@ export function buildOpRunArgs(
     envFilePath: string,
     args: readonly string[],
 ): string[] {
-    return [opPath, "run", `--env-file=${envFilePath}`, "--", ...args];
+    return [opPath, "run", `--env-file=${envFilePath}`, "--", ...args]
 }

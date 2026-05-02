@@ -1,17 +1,17 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 
-import * as vscode from "vscode";
+import * as vscode from "vscode"
 
-import { formatDotenv } from "./dotenv";
-import type { SignalName, SignalStep, StringEnvMap } from "./envHelpers";
-import { buildOpRunArgs, isRunInTerminalRequest } from "./launchRewrite";
-import { defaultGetProcessTree, type GetProcessTreeFn, isOpRunCommand, type ProcessInfo } from "./processTree";
-import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "./resolveLaunchConfig";
+import { formatDotenv } from "./dotenv"
+import type { SignalName, SignalStep, StringEnvMap } from "./envHelpers"
+import { buildOpRunArgs, isRunInTerminalRequest } from "./launchRewrite"
+import { defaultGetProcessTree, type GetProcessTreeFn, isOpRunCommand, type ProcessInfo } from "./processTree"
+import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "./resolveLaunchConfig"
 
 // Re-exports kept for the integration tests + any future external consumers.
-export { type GetProcessTreeFn, isOpRunCommand, type ProcessInfo } from "./processTree";
+export { type GetProcessTreeFn, isOpRunCommand, type ProcessInfo } from "./processTree"
 
 /**
  * Master registry of temp dirs the trackers have created. Owned by
@@ -20,15 +20,15 @@ export { type GetProcessTreeFn, isOpRunCommand, type ProcessInfo } from "./proce
  * activation-time stale-dir sweep.
  */
 export interface TempDirRegistry {
-    add(dir: string): void;
-    remove(dir: string): void;
+    add(dir: string): void
+    remove(dir: string): void
 }
 
 /**
  * Signature of `process.kill`. Pulled out so tests can inject a recorder
  * without spawning real processes.
  */
-export type KillFn = (pid: number, signal: NodeJS.Signals | number) => void;
+export type KillFn = (pid: number, signal: NodeJS.Signals | number) => void
 
 /**
  * Per-session tracker. For every `runInTerminal` request whose env has at
@@ -50,10 +50,10 @@ export type KillFn = (pid: number, signal: NodeJS.Signals | number) => void;
  * reality for years, but not a formal guarantee.
  */
 class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
-    private readonly dirs: string[] = [];
-    private pid: number | undefined;
-    private programExited = false;
-    private pendingKillTimer: NodeJS.Timeout | undefined;
+    private readonly dirs: string[] = []
+    private pid: number | undefined
+    private programExited = false
+    private pendingKillTimer: NodeJS.Timeout | undefined
 
     constructor(
         private readonly registry: TempDirRegistry,
@@ -69,54 +69,55 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
 
     onDidSendMessage(message: unknown): void {
         if (isDapEvent(message, "exited")) {
-            this.programExited = true;
-            this.cancelPendingKill();
-            return;
+            this.programExited = true
+            this.cancelPendingKill()
+            return
         }
 
         if (!isRunInTerminalRequest(message)) {
-            return;
+            return
         }
 
-        const stringEnv = toStringEnv(message.arguments.env);
+        const stringEnv = toStringEnv(message.arguments.env)
 
         if (Object.keys(stringEnv).length === 0) {
-            return;
+            return
         }
 
-        let createdDir: string | undefined;
+        let createdDir: string | undefined
 
         try {
             const opPath = vscode.workspace
                 .getConfiguration("secretResolver")
-                .get<string>("opPath", "op");
+                .get<string>("opPath", "op")
 
             const dir = fs.mkdtempSync(
                 path.join(os.tmpdir(), "secret-resolver-"),
-            );
-            createdDir = dir;
-            const envFilePath = path.join(dir, "env");
+            )
+            createdDir = dir
+
+            const envFilePath = path.join(dir, "env")
             fs.writeFileSync(envFilePath, formatDotenv(stringEnv), {
                 mode: 0o600,
-            });
+            })
             fs.writeFileSync(path.join(dir, ".pid"), String(process.pid), {
                 mode: 0o600,
-            });
+            })
 
-            this.dirs.push(dir);
-            this.registry.add(dir);
+            this.dirs.push(dir)
+            this.registry.add(dir)
 
             message.arguments.args = buildOpRunArgs(
                 opPath,
                 envFilePath,
                 message.arguments.args,
-            );
-            message.arguments.env = {};
+            )
+            message.arguments.env = {}
         }
         catch (err) {
             if (createdDir !== undefined) {
                 try {
-                    fs.rmSync(createdDir, { recursive: true, force: true });
+                    fs.rmSync(createdDir, { recursive: true, force: true })
                 }
                 catch {
                     // best-effort
@@ -125,31 +126,31 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
 
             console.error(
                 `[secret-resolver] runInTerminal rewrite failed: ${(err as Error).message}`,
-            );
+            )
         }
     }
 
     onWillReceiveMessage(message: unknown): void {
         if (this.signalConfig === undefined) {
-            return;
+            return
         }
 
         if (isRunInTerminalResponse(message)) {
             const body = message.body as
                 | { processId?: number; shellProcessId?: number }
-                | undefined;
+                | undefined
             // Prefer `shellProcessId` — it's the runInTerminal shell, which
             // is the root we'll walk to find the actual program. `processId`
             // is a fallback when the shell PID is absent; we walk from
             // whichever PID we have.
-            const pid = body?.shellProcessId ?? body?.processId;
+            const pid = body?.shellProcessId ?? body?.processId
 
             if (typeof pid === "number" && pid > 0) {
-                this.pid = pid;
-                showTimedNotification(`Launched process has PID ${pid}`);
+                this.pid = pid
+                showTimedNotification(`Launched process has PID ${pid}`)
             }
 
-            return;
+            return
         }
 
         if (
@@ -158,65 +159,65 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
             && this.pid !== undefined
             && !this.programExited
         ) {
-            this.dispatchSignalSequence(this.signalConfig.steps);
+            this.dispatchSignalSequence(this.signalConfig.steps)
         }
     }
 
     onWillStopSession(): void {
-        this.cleanup();
+        this.cleanup()
     }
 
     onExit(): void {
-        this.cancelPendingKill();
-        this.cleanup();
+        this.cancelPendingKill()
+        this.cleanup()
     }
 
     private dispatchSignalSequence(steps: SignalStep[], index = 0): void {
         if (index >= steps.length || this.programExited || this.pid === undefined) {
-            return;
+            return
         }
 
-        const step = steps[index];
+        const step = steps[index]
 
         const go = (): void => {
-            void this.signalProcessTree(this.pid!, toNodeSignal(step.signal));
-            this.dispatchSignalSequence(steps, index + 1);
-        };
+            void this.signalProcessTree(this.pid!, toNodeSignal(step.signal))
+            this.dispatchSignalSequence(steps, index + 1)
+        }
 
         if (step.delaySec > 0) {
             this.pendingKillTimer = this.setKillTimer(() => {
-                this.pendingKillTimer = undefined;
+                this.pendingKillTimer = undefined
 
                 if (!this.programExited) {
-                    go();
+                    go()
                 }
-            }, step.delaySec * 1000);
+            }, step.delaySec * 1000)
 
-            return;
+            return
         }
 
-        go();
+        go()
     }
 
     private async signalProcessTree(
         rootPid: number,
         signal: NodeJS.Signals,
     ): Promise<void> {
-        let tree: ProcessInfo[];
+        let tree: ProcessInfo[]
 
         try {
-            tree = await this.getProcessTree(rootPid);
+            tree = await this.getProcessTree(rootPid)
         }
         catch (err) {
             console.error(
                 `[secret-resolver] failed to walk process tree of pid ${rootPid}: ${(err as Error).message}`,
-            );
-            tree = [];
+            )
+            tree = []
         }
 
         if (tree.length === 0) {
-            showTimedNotification(`PID ${rootPid} has no children, nothing to signal.`);
-            return;
+            showTimedNotification(`PID ${rootPid} has no children, nothing to signal.`)
+            return
         }
 
         // Locate every `op run` wrapper anywhere in the tree, then signal
@@ -226,47 +227,47 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
         // touched.
         const opPids = new Set(
             tree.filter((p) => isOpRunCommand(p.command)).map((p) => p.pid),
-        );
+        )
 
         if (opPids.size === 0) {
-            showTimedNotification(`PID ${rootPid} has no \`op\` child; nothing to ${signal}.`);
-            return;
+            showTimedNotification(`PID ${rootPid} has no \`op\` child; nothing to ${signal}.`)
+            return
         }
 
-        const targets = tree.filter((p) => opPids.has(p.ppid));
+        const targets = tree.filter((p) => opPids.has(p.ppid))
 
         if (targets.length === 0) {
             showTimedNotification(
                 `\`op\` wrapper(s) (${[...opPids].join(", ")}) have no children; nothing to ${signal}.`,
-            );
-            return;
+            )
+            return
         }
 
         for (const target of targets) {
-            safeKill(this.kill, target.pid, signal);
-            showTimedNotification(`Sent ${signal} to PID ${target.pid}`);
+            safeKill(this.kill, target.pid, signal)
+            showTimedNotification(`Sent ${signal} to PID ${target.pid}`)
         }
     }
 
     private cancelPendingKill(): void {
         if (this.pendingKillTimer !== undefined) {
-            this.clearKillTimer(this.pendingKillTimer);
-            this.pendingKillTimer = undefined;
+            this.clearKillTimer(this.pendingKillTimer)
+            this.pendingKillTimer = undefined
         }
     }
 
     private cleanup(): void {
         while (this.dirs.length > 0) {
-            const dir = this.dirs.pop()!;
+            const dir = this.dirs.pop()!
 
             try {
-                fs.rmSync(dir, { recursive: true, force: true });
+                fs.rmSync(dir, { recursive: true, force: true })
             }
             catch {
                 // best-effort
             }
 
-            this.registry.remove(dir);
+            this.registry.remove(dir)
         }
     }
 }
@@ -275,7 +276,7 @@ export class SecretDebugAdapterTrackerFactory implements vscode.DebugAdapterTrac
     constructor(
         private readonly registry: TempDirRegistry,
         private readonly kill: KillFn = (pid, sig) => {
-            process.kill(pid, sig);
+            process.kill(pid, sig)
         },
         private readonly setKillTimer: (
             cb: () => void,
@@ -289,7 +290,7 @@ export class SecretDebugAdapterTrackerFactory implements vscode.DebugAdapterTrac
         session: vscode.DebugSession,
     ): vscode.ProviderResult<vscode.DebugAdapterTracker> {
         if (process.platform === "win32") {
-            return undefined;
+            return undefined
         }
 
         return new SecretDebugAdapterTracker(
@@ -299,29 +300,29 @@ export class SecretDebugAdapterTrackerFactory implements vscode.DebugAdapterTrac
             this.setKillTimer,
             this.clearKillTimer,
             this.getProcessTree,
-        );
+        )
     }
 }
 
 function toNodeSignal(name: SignalName): NodeJS.Signals {
     switch (name) {
         case "TERM":
-            return "SIGTERM";
+            return "SIGTERM"
         case "KILL":
-            return "SIGKILL";
+            return "SIGKILL"
         case "INT":
-            return "SIGINT";
+            return "SIGINT"
         case "HUP":
-            return "SIGHUP";
+            return "SIGHUP"
     }
 }
 
 function isSignalStep(x: unknown): x is SignalStep {
     if (typeof x !== "object" || x === null) {
-        return false;
+        return false
     }
 
-    const s = x as Partial<SignalStep>;
+    const s = x as Partial<SignalStep>
 
     return (
         typeof s.delaySec === "number"
@@ -330,45 +331,45 @@ function isSignalStep(x: unknown): x is SignalStep {
             || s.signal === "KILL"
             || s.signal === "INT"
             || s.signal === "HUP")
-    );
+    )
 }
 
 function extractSignalConfig(
     session: vscode.DebugSession,
 ): SecretResolverSessionConfig | undefined {
     const raw = (session.configuration as Record<string, unknown> | undefined)
-        ?.[SECRET_RESOLVER_CONFIG_FIELD];
+        ?.[SECRET_RESOLVER_CONFIG_FIELD]
 
     if (typeof raw !== "object" || raw === null) {
-        return undefined;
+        return undefined
     }
 
-    const candidate = raw as { steps?: unknown };
+    const candidate = raw as { steps?: unknown }
 
     if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) {
-        return undefined;
+        return undefined
     }
 
     if (!candidate.steps.every(isSignalStep)) {
-        return undefined;
+        return undefined
     }
 
-    return { steps: candidate.steps };
+    return { steps: candidate.steps }
 }
 
 function safeKill(kill: KillFn, pid: number, signal: NodeJS.Signals): void {
     try {
-        kill(pid, signal);
+        kill(pid, signal)
     }
     catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
+        const code = (err as NodeJS.ErrnoException).code
 
         // ESRCH = process already gone. Other errors (EPERM, EINVAL) are
         // worth logging; the session itself is unaffected.
         if (code !== "ESRCH") {
             console.error(
                 `[secret-resolver] failed to send ${signal} to pid ${pid}: ${(err as Error).message}`,
-            );
+            )
         }
     }
 }
@@ -377,7 +378,7 @@ function showTimedNotification(message: string, timeoutMs = 10_000): void {
     void vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: message, cancellable: false },
         () => new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-    );
+    )
 }
 
 function isDapEvent(
@@ -385,11 +386,11 @@ function isDapEvent(
     event: string,
 ): message is { type: "event"; event: string } {
     if (typeof message !== "object" || message === null) {
-        return false;
+        return false
     }
 
-    const m = message as { type?: unknown; event?: unknown };
-    return m.type === "event" && m.event === event;
+    const m = message as { type?: unknown; event?: unknown }
+    return m.type === "event" && m.event === event
 }
 
 function isDapRequest(
@@ -397,48 +398,48 @@ function isDapRequest(
     command: string,
 ): message is { type: "request"; command: string; arguments?: unknown } {
     if (typeof message !== "object" || message === null) {
-        return false;
+        return false
     }
 
-    const m = message as { type?: unknown; command?: unknown };
-    return m.type === "request" && m.command === command;
+    const m = message as { type?: unknown; command?: unknown }
+    return m.type === "request" && m.command === command
 }
 
 function isRunInTerminalResponse(
     message: unknown,
 ): message is { type: "response"; command: "runInTerminal"; body?: unknown } {
     if (typeof message !== "object" || message === null) {
-        return false;
+        return false
     }
 
-    const m = message as { type?: unknown; command?: unknown };
-    return m.type === "response" && m.command === "runInTerminal";
+    const m = message as { type?: unknown; command?: unknown }
+    return m.type === "response" && m.command === "runInTerminal"
 }
 
 function shouldTerminateOnDisconnect(message: {
-    arguments?: unknown;
+    arguments?: unknown
 }): boolean {
     const args = message.arguments as
         | { terminateDebuggee?: unknown }
-        | undefined;
+        | undefined
 
-    return args?.terminateDebuggee !== false;
+    return args?.terminateDebuggee !== false
 }
 
 function toStringEnv(
     env: Record<string, string | null> | undefined,
 ): StringEnvMap {
-    const out: StringEnvMap = {};
+    const out: StringEnvMap = {}
 
     if (env === undefined || env === null) {
-        return out;
+        return out
     }
 
     for (const [key, value] of Object.entries(env)) {
         if (typeof value === "string") {
-            out[key] = value;
+            out[key] = value
         }
     }
 
-    return out;
+    return out
 }

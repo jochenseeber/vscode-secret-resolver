@@ -1,8 +1,8 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto"
 
-const KEY_BYTES = 32;
-const IV_BYTES = 12;
-const TAG_BYTES = 16;
+const KEY_BYTES = 32
+const IV_BYTES = 12
+const TAG_BYTES = 16
 
 /**
  * Session-scoped cache for resolved 1Password values. Keys are hashed with
@@ -20,12 +20,12 @@ const TAG_BYTES = 16;
  * accidental log disclosure, not against a determined attacker.
  */
 export class SecretCache {
-    #sessionKey: Buffer;
-    #entries: Map<string, Buffer>;
+    #sessionKey: Buffer
+    #entries: Map<string, Buffer>
 
     constructor() {
-        this.#sessionKey = randomBytes(KEY_BYTES);
-        this.#entries = new Map();
+        this.#sessionKey = randomBytes(KEY_BYTES)
+        this.#entries = new Map()
     }
 
     /**
@@ -33,13 +33,13 @@ export class SecretCache {
      * cached.
      */
     get(opRef: string): string | undefined {
-        const blob = this.#entries.get(this.#hashKey(opRef));
+        const blob = this.#entries.get(this.#hashKey(opRef))
 
         if (blob === undefined) {
-            return undefined;
+            return undefined
         }
 
-        return this.#decrypt(blob);
+        return this.#decrypt(blob)
     }
 
     /**
@@ -47,7 +47,7 @@ export class SecretCache {
      * existing entry.
      */
     set(opRef: string, value: string): void {
-        this.#entries.set(this.#hashKey(opRef), this.#encrypt(value));
+        this.#entries.set(this.#hashKey(opRef), this.#encrypt(value))
     }
 
     /**
@@ -58,37 +58,37 @@ export class SecretCache {
      * set ref returns `undefined`.
      */
     clear(): void {
-        this.#sessionKey.fill(0);
-        this.#sessionKey = randomBytes(KEY_BYTES);
-        this.#entries = new Map();
+        this.#sessionKey.fill(0)
+        this.#sessionKey = randomBytes(KEY_BYTES)
+        this.#entries = new Map()
     }
 
     #hashKey(opRef: string): string {
         return createHmac("sha256", this.#sessionKey)
             .update(opRef)
-            .digest("hex");
+            .digest("hex")
     }
 
     #encrypt(plaintext: string): Buffer {
-        const iv = randomBytes(IV_BYTES);
-        const cipher = createCipheriv("aes-256-gcm", this.#sessionKey, iv);
+        const iv = randomBytes(IV_BYTES)
+        const cipher = createCipheriv("aes-256-gcm", this.#sessionKey, iv)
         const ciphertext = Buffer.concat([
             cipher.update(plaintext, "utf8"),
             cipher.final(),
-        ]);
-        const tag = cipher.getAuthTag();
-        return Buffer.concat([iv, tag, ciphertext]);
+        ])
+        const tag = cipher.getAuthTag()
+        return Buffer.concat([iv, tag, ciphertext])
     }
 
     #decrypt(blob: Buffer): string {
-        const iv = blob.subarray(0, IV_BYTES);
-        const tag = blob.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
-        const ciphertext = blob.subarray(IV_BYTES + TAG_BYTES);
-        const decipher = createDecipheriv("aes-256-gcm", this.#sessionKey, iv);
-        decipher.setAuthTag(tag);
+        const iv = blob.subarray(0, IV_BYTES)
+        const tag = blob.subarray(IV_BYTES, IV_BYTES + TAG_BYTES)
+        const ciphertext = blob.subarray(IV_BYTES + TAG_BYTES)
+        const decipher = createDecipheriv("aes-256-gcm", this.#sessionKey, iv)
+        decipher.setAuthTag(tag)
         return Buffer.concat([
             decipher.update(ciphertext),
             decipher.final(),
-        ]).toString("utf8");
+        ]).toString("utf8")
     }
 }

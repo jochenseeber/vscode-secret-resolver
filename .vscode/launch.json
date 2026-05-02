@@ -10,9 +10,9 @@
                 "${workspaceFolder}/examples"
             ],
             "outFiles": [
-                "${workspaceFolder}/build/**/*.js"
+                "${workspaceFolder}/dist/**/*.js"
             ],
-            "preLaunchTask": "pnpm: compile"
+            "preLaunchTask": "nx: compile"
         }
     ]
 }

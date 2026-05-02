@@ -1,4 +1,11 @@
 {
+    "inputs": [
+        {
+            "id": "opAccountId",
+            "type": "promptString",
+            "description": "Enter the 1Password account ID to use for this launch"
+        }
+    ],
     "configurations": [
         {
             "name": "Test Node Launch: Integrated Terminal",
@@ -7,7 +14,7 @@
             "program": "${workspaceFolder}/TestNodeLaunch.js",
             "console": "integratedTerminal",
             "env": {
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"
@@ -19,7 +26,7 @@
             "program": "${workspaceFolder}/TestNodeLaunch.js",
             "console": "externalTerminal",
             "env": {
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"
@@ -31,7 +38,7 @@
             "program": "${workspaceFolder}/TestNodeLaunch.js",
             "console": "internalConsole",
             "env": {
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"
@@ -44,7 +51,7 @@
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "env": {
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"
@@ -57,7 +64,7 @@
             "cwd": "${workspaceFolder}",
             "console": "externalTerminal",
             "env": {
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"
@@ -70,7 +77,7 @@
             "cwd": "${workspaceFolder}",
             "console": "internalConsole",
             "env": {
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"
@@ -83,7 +90,7 @@
             "console": "integratedTerminal",
             "env": {
                 "SECRET_RESOLVER_MODE": "cache",
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"
@@ -97,7 +104,7 @@
             "console": "integratedTerminal",
             "env": {
                 "SECRET_RESOLVER_MODE": "cache",
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"
@@ -110,7 +117,7 @@
             "console": "integratedTerminal",
             "env": {
                 "SECRET_RESOLVER_SIGNAL_ON_STOP": "int+15:kill",
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"
@@ -124,7 +131,7 @@
             "console": "integratedTerminal",
             "env": {
                 "SECRET_RESOLVER_SIGNAL_ON_STOP": "int+15:kill",
-                "TEST_SECRET": "op://Employee/Secret Resolver Extension Test/password",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
                 "TEST_HELLO": "Hello, World!"
             },
             "envFile": "${workspaceFolder}/.env"

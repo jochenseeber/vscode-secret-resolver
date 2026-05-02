@@ -1,0 +1,335 @@
+{
+    "$schema": "./node_modules/nx/schemas/project-schema.json",
+    "targets": {
+        "changelog": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "tsx scripts/changelog.ts"
+            },
+            "cache": false
+        },
+        "check": {
+            "executor": "nx:noop",
+            "dependsOn": [
+                "check:format",
+                "check:lint",
+                "check:types"
+            ]
+        },
+        "check:format": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "dprint check"
+            },
+            "cache": true,
+            "inputs": [
+                "default",
+                "{workspaceRoot}/dprint.json"
+            ]
+        },
+        "check:lint": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "eslint . --cache --cache-location .tmp/eslint-cache --cache-strategy content"
+            },
+            "cache": true,
+            "inputs": [
+                "{projectRoot}/src/**/*.ts",
+                "{projectRoot}/spec/**/*.ts",
+                "{projectRoot}/scripts/**/*.ts",
+                "{workspaceRoot}/eslint.config.mjs",
+                {
+                    "externalDependencies": [
+                        "eslint",
+                        "typescript-eslint",
+                        "@stylistic/eslint-plugin"
+                    ]
+                }
+            ]
+        },
+        "check:types": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "tsc --noEmit"
+            },
+            "cache": true,
+            "inputs": [
+                "{projectRoot}/src/**/*.ts",
+                "{projectRoot}/spec/**/*.ts",
+                "{projectRoot}/scripts/**/*.ts",
+                "{workspaceRoot}/tsconfig.json",
+                {
+                    "externalDependencies": [
+                        "typescript"
+                    ]
+                }
+            ]
+        },
+        "format": {
+            "executor": "nx:noop",
+            "cache": false,
+            "dependsOn": [
+                "format:dprint",
+                "format:eslint"
+            ]
+        },
+        "format:dprint": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "dprint fmt"
+            },
+            "cache": false,
+            "inputs": [
+                "default",
+                "{workspaceRoot}/dprint.json"
+            ]
+        },
+        "format:eslint": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "eslint . --fix --cache --cache-location .tmp/eslint-cache --cache-strategy content"
+            },
+            "cache": false,
+            "dependsOn": [
+                "format:dprint"
+            ]
+        },
+        "release:bump": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "tsx scripts/release.ts bump"
+            },
+            "cache": false,
+            "dependsOn": [
+                "release:plan"
+            ]
+        },
+        "release:changelog": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "tsx scripts/changelog.ts"
+            },
+            "cache": false,
+            "dependsOn": [
+                "release:bump"
+            ]
+        },
+        "release:commit": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "tsx scripts/release.ts commit"
+            },
+            "cache": false,
+            "dependsOn": [
+                "release:changelog"
+            ]
+        },
+        "release:plan": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "tsx scripts/release.ts plan"
+            },
+            "cache": false,
+            "dependsOn": [
+                "check",
+                "test"
+            ]
+        },
+        "stage": {
+            "executor": "nx:noop",
+            "dependsOn": [
+                "stage:generate",
+                "stage:check"
+            ],
+            "defaultConfiguration": "production"
+        },
+        "stage:check": {
+            "executor": "nx:noop",
+            "dependsOn": [
+                "stage:generate",
+                "check",
+                "test"
+            ]
+        },
+        "stage:generate": {
+            "executor": "nx:noop",
+            "dependsOn": [
+                "format"
+            ]
+        },
+        "test": {
+            "executor": "nx:noop",
+            "dependsOn": [
+                "test:unit",
+                "test:integration"
+            ],
+            "defaultConfiguration": "development"
+        },
+        "test:unit": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "vitest run spec"
+            },
+            "cache": true,
+            "inputs": [
+                "{projectRoot}/src/**/*",
+                "{projectRoot}/spec/**/*",
+                "{projectRoot}/tsconfig.json",
+                {
+                    "externalDependencies": [
+                        "vitest"
+                    ]
+                }
+            ],
+            "defaultConfiguration": "development"
+        },
+        "test:integration": {
+            "executor": "nx:run-commands",
+            "defaultConfiguration": "development",
+            "options": {
+                "command": "vscode-test"
+            },
+            "cache": true,
+            "dependsOn": [
+                "build"
+            ],
+            "inputs": [
+                "{projectRoot}/dist/**/*",
+                "{projectRoot}/.vscode-test.mjs",
+                "{projectRoot}/package.json",
+                {
+                    "externalDependencies": [
+                        "@vscode/test-cli"
+                    ]
+                }
+            ]
+        },
+        "clean": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "rm -rf dist pkg"
+            },
+            "cache": false
+        },
+        "package:bin": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "mkdir -p pkg && vsce package --no-dependencies --out pkg/"
+            },
+            "cache": true,
+            "dependsOn": [
+                "build"
+            ],
+            "inputs": [
+                "{projectRoot}/dist/**/*",
+                "{projectRoot}/.vscodeignore",
+                "{projectRoot}/package.json",
+                {
+                    "externalDependencies": [
+                        "@vscode/vsce"
+                    ]
+                }
+            ],
+            "outputs": [
+                "{projectRoot}/pkg"
+            ]
+        },
+        "package": {
+            "executor": "nx:noop",
+            "cache": false,
+            "dependsOn": [
+                "package:bin",
+                "build"
+            ]
+        },
+        "watch": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "vite build --watch"
+            },
+            "cache": false,
+            "dependsOn": [
+                "generate"
+            ]
+        },
+        "ship": {
+            "executor": "nx:noop",
+            "dependsOn": [
+                "ship:marketplace",
+                "ship:openvsx"
+            ]
+        },
+        "ship:github": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "tsx scripts/ship-github.ts"
+            },
+            "cache": false,
+            "dependsOn": [
+                "package"
+            ]
+        },
+        "ship:marketplace": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "tsx scripts/ship-marketplace.ts"
+            },
+            "cache": false,
+            "dependsOn": [
+                "package"
+            ]
+        },
+        "ship:openvsx": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "tsx scripts/ship-openvsx.ts"
+            },
+            "cache": false,
+            "dependsOn": [
+                "package"
+            ]
+        },
+        "build": {
+            "executor": "nx:noop",
+            "dependsOn": [
+                "build:src"
+            ],
+            "configurations": {
+                "production": {
+                    "dependsOn": [
+                        "build:src"
+                    ]
+                }
+            }
+        },
+        "build:src": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "vite build"
+            },
+            "cache": true,
+            "dependsOn": [
+                "generate"
+            ],
+            "inputs": [
+                "production",
+                "{projectRoot}/src/**/*",
+                "{projectRoot}/vite.config.ts",
+                {
+                    "externalDependencies": [
+                        "vite",
+                        "typescript"
+                    ]
+                }
+            ],
+            "outputs": [
+                "{projectRoot}/dist"
+            ],
+            "configurations": {
+                "development": {
+                    "command": "vite build --mode development"
+                }
+            }
+        }
+    }
+}

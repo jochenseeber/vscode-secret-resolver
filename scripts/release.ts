@@ -7,100 +7,138 @@ import {
     runEntrypoint,
     Version,
     writeVersion,
-} from "./util.ts";
+} from "./util.ts"
 
-import { createInterface } from "node:readline/promises";
-import { regenerateCurrentVersionChangelog } from "./changelog.ts";
+import { createInterface } from "node:readline/promises"
+import { regenerateCurrentVersionChangelog } from "./changelog.ts"
 
 function escapeRegExp(text: string): string {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-const { releaseRefPrefix: RELEASE_REF_PREFIX, releaseBranchSuffix: RELEASE_BRANCH_SUFFIX } = readPackageJson();
-const TAG_PREFIX = RELEASE_REF_PREFIX;
+const { releaseRefPrefix: RELEASE_REF_PREFIX, releaseBranchSuffix: RELEASE_BRANCH_SUFFIX } = readPackageJson()
+const TAG_PREFIX = RELEASE_REF_PREFIX
 const RELEASE_BRANCH_RE = new RegExp(
     `^${escapeRegExp(RELEASE_REF_PREFIX)}(\\d+)\.(\\d+)${escapeRegExp(RELEASE_BRANCH_SUFFIX)}$`,
-);
+)
 
-type BumpChoice = "major" | "minor";
+type BumpChoice = "major" | "minor"
 
 interface BumpDecision {
-    choice: BumpChoice;
-    reason: string;
+    choice: BumpChoice
+    reason: string
 }
 
-const git = (...args: string[]): string => capture("git", args);
+interface VersionTriple {
+    major: number
+    minor: number
+    patch: number
+}
 
-function detectBumpFromCommits(): BumpDecision {
-    let rangeStart = "";
+const git = (...args: string[]): string => capture("git", args)
 
-    try {
-        rangeStart = git(
-            "log",
-            "--extended-regexp",
-            "--grep=^Start [0-9]+\\.[0-9]+\\.0 development",
-            "--format=%H",
-            "-n",
-            "1",
-        );
-    }
-    catch {
-        // no matching commits; treat whole history as the range
-    }
+const TAG_RE = new RegExp(
+    `^${escapeRegExp(TAG_PREFIX)}(\\d+)\\.(\\d+)\\.(\\d+)(?:-[\\w.-]+)?$`,
+)
 
-    const range = rangeStart ? `${rangeStart}..HEAD` : "HEAD";
-    const log = git("log", range, "--format=%H%n%B%x00");
-    const commits = log.split("\0").map((c) => c.trim()).filter(Boolean);
+function compareTriples(a: VersionTriple, b: VersionTriple): number {
+    if (a.major !== b.major) return a.major - b.major
+    if (a.minor !== b.minor) return a.minor - b.minor
+    return a.patch - b.patch
+}
 
-    const breakingSubject = /^[a-z]+(?:\([^)]+\))?!:/m;
-    const breakingBody = /^BREAKING[ -]CHANGE:/m;
+/**
+ * Walks local branches matching `RELEASE_BRANCH_RE` and tags matching
+ * `TAG_RE`, returning the highest-versioned reference. Branches contribute
+ * `(major, minor)` only — patch is treated as `-1` so a tag at the same
+ * `(major, minor)` ranks higher when both exist.
+ */
+function findLatestReleaseRef(): { triple: VersionTriple; ref: string } | null {
+    const branches = git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/",
+    ).split("\n").filter(Boolean)
 
-    for (const commit of commits) {
-        const [sha, ...bodyLines] = commit.split("\n");
-        const subject = bodyLines[0] ?? "";
-        const body = bodyLines.join("\n");
+    const tags = git("tag", "-l").split("\n").filter(Boolean)
 
-        if (breakingSubject.test(subject) || breakingBody.test(body)) {
-            return {
-                choice: "major",
-                reason: `breaking change in ${sha.slice(0, 7)}: ${subject}`,
-            };
+    let latest: { triple: VersionTriple; ref: string } | null = null
+
+    const consider = (triple: VersionTriple, ref: string): void => {
+        if (latest === null || compareTriples(triple, latest.triple) > 0) {
+            latest = { triple, ref }
         }
     }
 
-    return { choice: "minor", reason: "no breaking changes detected" };
+    for (const branch of branches) {
+        const m = RELEASE_BRANCH_RE.exec(branch)
+        if (m) consider({ major: +m[1], minor: +m[2], patch: -1 }, branch)
+    }
+
+    for (const tag of tags) {
+        const m = TAG_RE.exec(tag)
+        if (m) consider({ major: +m[1], minor: +m[2], patch: +m[3] }, tag)
+    }
+
+    return latest
 }
 
-async function resolveBump(): Promise<BumpDecision> {
-    const argChoice = process.argv[2];
+/**
+ * Derives the bump label by comparing `package.json`'s current version
+ * against the highest-versioned release branch/tag in the repository. The
+ * label is informational only — release version and next-dev version are
+ * computed directly from `package.json`.
+ */
+function detectBumpFromVersionState(current: Version): BumpDecision {
+    const latest = findLatestReleaseRef()
 
-    if (argChoice === "major" || argChoice === "minor") {
-        return { choice: argChoice, reason: "overridden via CLI argument" };
+    if (latest === null) {
+        return { choice: "minor", reason: "no prior release branches or tags found" }
     }
 
-    if (argChoice) {
+    const currentTriple: VersionTriple = {
+        major: current.major,
+        minor: current.minor,
+        patch: current.patch,
+    }
+
+    if (compareTriples(currentTriple, latest.triple) <= 0) {
         throw new Error(
-            `Unknown bump type: ${argChoice} (expected 'major' or 'minor')`,
-        );
+            `package.json version ${
+                formatVersion(current)
+            } is not ahead of latest release ${latest.ref}. Bump package.json before releasing.`,
+        )
     }
 
-    return detectBumpFromCommits();
+    if (current.major > latest.triple.major) {
+        return {
+            choice: "major",
+            reason: `package.json ${formatVersion(current)} advances major from ${latest.ref}`,
+        }
+    }
+
+    return {
+        choice: "minor",
+        reason: `package.json ${
+            formatVersion(current)
+        } stays on major ${current.major} (latest release: ${latest.ref})`,
+    }
 }
 
 async function confirm(question: string): Promise<boolean> {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const answer = (await rl.question(`${question} [y/N] `)).trim().toLowerCase();
-    rl.close();
-    return answer === "y" || answer === "yes";
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    const answer = (await rl.question(`${question} [y/N] `)).trim().toLowerCase()
+    rl.close()
+    return answer === "y" || answer === "yes"
 }
 
 function commitVersion(message: string): void {
-    git("add", "package.json");
-    git("commit", "-m", message);
+    git("add", "package.json", "CHANGELOG.md")
+    git("commit", "-m", message)
 }
 
 function createTag(tag: string): void {
-    git("tag", tag);
+    git("tag", tag)
 }
 
 /**
@@ -110,28 +148,28 @@ function createTag(tag: string): void {
  * the caller can fold it into the next commit.
  */
 async function regenerateChangelog(): Promise<void> {
-    await regenerateCurrentVersionChangelog();
-    git("add", "CHANGELOG.md");
+    await regenerateCurrentVersionChangelog()
+    git("add", "CHANGELOG.md")
 }
 
 async function main(): Promise<void> {
-    assertCleanWorkspace();
+    assertCleanWorkspace()
 
-    const current = parseVersion(readPackageJson().version);
+    const current = parseVersion(readPackageJson().version)
 
-    const branch = git("rev-parse", "--abbrev-ref", "HEAD");
+    const branch = git("rev-parse", "--abbrev-ref", "HEAD")
 
     if (branch === "HEAD") {
-        throw new Error("Cannot release from detached HEAD.");
+        throw new Error("Cannot release from detached HEAD.")
     }
 
-    const onReleaseBranch = RELEASE_BRANCH_RE.test(branch);
-    const fromBranch = branch;
+    const onReleaseBranch = RELEASE_BRANCH_RE.test(branch)
+    const fromBranch = branch
 
-    let releaseVersion: Version;
-    let releaseBranchName: string;
-    let releaseBranchNextDev: Version;
-    let fromBranchNextDev: Version | null = null;
+    let releaseVersion: Version
+    let releaseBranchName: string
+    let releaseBranchNextDev: Version
+    let fromBranchNextDev: Version | null = null
 
     if (onReleaseBranch) {
         if (current.prerelease !== "dev") {
@@ -139,105 +177,102 @@ async function main(): Promise<void> {
                 `Release branch version "${
                     formatVersion(current)
                 }" has no -dev suffix; bump the branch to the next patch development version before cutting another release.`,
-            );
+            )
         }
 
-        releaseVersion = { ...current, prerelease: null };
+        releaseVersion = { ...current, prerelease: null }
         releaseBranchNextDev = {
             ...current,
             patch: current.patch + 1,
             prerelease: "dev",
-        };
-        releaseBranchName = branch;
+        }
+        releaseBranchName = branch
     }
     else if (branch === "main") {
         if (current.prerelease !== "dev") {
             throw new Error(
                 `Current version "${formatVersion(current)}" has no -dev suffix; nothing to release from main.`,
-            );
+            )
         }
 
-        const decision = await resolveBump();
-        console.log(`Auto-detected bump: ${decision.choice} (${decision.reason})`);
+        const decision = detectBumpFromVersionState(current)
+        console.log(`Detected bump: ${decision.choice} (${decision.reason})`)
 
-        if (decision.choice === "major") {
-            releaseVersion = { major: current.major + 1, minor: 0, patch: 0, prerelease: null };
-            fromBranchNextDev = { major: current.major + 1, minor: 1, patch: 0, prerelease: "dev" };
-        }
-        else {
-            releaseVersion = { ...current, prerelease: null };
-            fromBranchNextDev = {
-                major: current.major,
-                minor: current.minor + 1,
-                patch: 0,
-                prerelease: "dev",
-            };
+        releaseVersion = { ...current, prerelease: null }
+        fromBranchNextDev = {
+            major: current.major,
+            minor: current.minor + 1,
+            patch: 0,
+            prerelease: "dev",
         }
 
-        releaseBranchName = `${TAG_PREFIX}${releaseVersion.major}.${releaseVersion.minor}${RELEASE_BRANCH_SUFFIX}`;
+        releaseBranchName = `${TAG_PREFIX}${releaseVersion.major}.${releaseVersion.minor}${RELEASE_BRANCH_SUFFIX}`
         releaseBranchNextDev = {
             major: releaseVersion.major,
             minor: releaseVersion.minor,
             patch: releaseVersion.patch + 1,
             prerelease: "dev",
-        };
+        }
     }
     else {
-        throw new Error(`Must be on 'main' or a release branch (got '${branch}').`);
+        throw new Error(`Must be on 'main' or a release branch (got '${branch}').`)
     }
 
-    const releaseStr = formatVersion(releaseVersion);
-    const releaseBranchNextDevStr = formatVersion(releaseBranchNextDev);
+    const releaseStr = formatVersion(releaseVersion)
+    const releaseBranchNextDevStr = formatVersion(releaseBranchNextDev)
     const fromBranchNextDevStr = fromBranchNextDev
         ? formatVersion(fromBranchNextDev)
-        : null;
-    const tag = `${TAG_PREFIX}${releaseStr}`;
+        : null
+    const tag = `${TAG_PREFIX}${releaseStr}`
 
-    console.log(`\nRelease version        : ${releaseStr}  (on ${releaseBranchName})`);
-    console.log(`Release branch next dev: ${releaseBranchNextDevStr}  (on ${releaseBranchName})`);
+    console.log(`\nRelease version        : ${releaseStr}  (on ${releaseBranchName})`)
+    console.log(`Release branch next dev: ${releaseBranchNextDevStr}  (on ${releaseBranchName})`)
 
     if (fromBranchNextDevStr) {
-        console.log(`Main next dev          : ${fromBranchNextDevStr}  (on ${fromBranch})`);
+        console.log(`Main next dev          : ${fromBranchNextDevStr}  (on ${fromBranch})`)
     }
 
-    console.log(`Tag to create          : ${tag}\n`);
+    console.log(`Tag to create          : ${tag}\n`)
 
     if (!(await confirm("Proceed?"))) {
-        console.log("Aborted.");
-        process.exit(1);
+        console.log("Aborted.")
+        process.exit(1)
     }
 
     if (onReleaseBranch) {
-        writeVersion(releaseStr);
-        await regenerateChangelog();
-        commitVersion(`Release ${releaseStr}`);
-        createTag(tag);
+        writeVersion(releaseStr)
+        await regenerateChangelog()
+        commitVersion(`chore: release ${releaseStr}`)
+        createTag(tag)
 
-        writeVersion(releaseBranchNextDevStr);
-        commitVersion(`Start ${releaseBranchNextDevStr} development`);
+        writeVersion(releaseBranchNextDevStr)
+        commitVersion(`chore: start ${releaseBranchNextDevStr} development`)
     }
     else {
-        git("branch", releaseBranchName);
-        git("checkout", releaseBranchName);
-        writeVersion(releaseStr);
-        await regenerateChangelog();
-        commitVersion(`Release ${releaseStr}`);
-        createTag(tag);
+        git("branch", releaseBranchName)
+        git("checkout", releaseBranchName)
+        writeVersion(releaseStr)
+        await regenerateChangelog()
+        commitVersion(`chore: release ${releaseStr}`)
+        createTag(tag)
 
-        writeVersion(releaseBranchNextDevStr);
-        commitVersion(`Start ${releaseBranchNextDevStr} development`);
+        writeVersion(releaseBranchNextDevStr)
+        commitVersion(`chore: start ${releaseBranchNextDevStr} development`)
 
-        git("checkout", fromBranch);
-        writeVersion(fromBranchNextDevStr ?? "");
-        commitVersion(`Start ${fromBranchNextDevStr} development`);
+        git("checkout", fromBranch)
+        // Bring the regenerated CHANGELOG.md from the release branch onto
+        // `fromBranch` so the changelog history is visible there too.
+        git("checkout", releaseBranchName, "--", "CHANGELOG.md")
+        writeVersion(fromBranchNextDevStr ?? "")
+        commitVersion(`chore: start ${fromBranchNextDevStr} development`)
     }
 
-    console.log("\nDone. Next steps:");
-    console.log(`  git push origin ${releaseBranchName} ${tag}`);
+    console.log("\nDone. Next steps:")
+    console.log(`  git push origin ${releaseBranchName} ${tag}`)
 
     if (fromBranchNextDevStr) {
-        console.log(`  git push origin ${fromBranch}`);
+        console.log(`  git push origin ${fromBranch}`)
     }
 }
 
-runEntrypoint(import.meta.url, main);
+runEntrypoint(import.meta.url, main)

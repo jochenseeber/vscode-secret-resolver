@@ -1,7 +1,13 @@
 {
+    "[css]": {
+        "editor.defaultFormatter": "dprint.dprint"
+    },
     "[git-commit]": {
         "editor.defaultFormatter": "dprint.dprint",
         "editor.tabSize": 2
+    },
+    "[html]": {
+        "editor.defaultFormatter": "dprint.dprint"
     },
     "[javascript]": {
         "editor.defaultFormatter": "dprint.dprint"
@@ -13,6 +19,9 @@
         "editor.defaultFormatter": "dprint.dprint"
     },
     "[jsonc]": {
+        "editor.defaultFormatter": "dprint.dprint"
+    },
+    "[less]": {
         "editor.defaultFormatter": "dprint.dprint"
     },
     "[markdown]": {
@@ -31,6 +40,9 @@
         "editor.wordWrapColumn": 79,
         "rewrap.wrappingColumn": 79
     },
+    "[scss]": {
+        "editor.defaultFormatter": "dprint.dprint"
+    },
     "[typescript]": {
         "editor.defaultFormatter": "dprint.dprint"
     },
@@ -41,9 +53,15 @@
         "editor.defaultFormatter": "dprint.dprint",
         "editor.tabSize": 2
     },
+    "claudeCode.preferredLocation": "sidebar",
+    "editor.detectIndentation": false,
     "editor.formatOnSave": true,
     "editor.insertSpaces": true,
+    "editor.rulers": [
+        130
+    ],
     "editor.tabSize": 4,
+    "editor.wordWrapColumn": 130,
     "js/ts.format.semicolons": "remove",
     "json.schemaDownload.trustedDomains": {
         "https://dprint.dev/": true,
@@ -55,5 +73,6 @@
     },
     "markdownlint.ignore": [
         "**/.serena/**"
-    ]
+    ],
+    "redhat.telemetry.enabled": false
 }

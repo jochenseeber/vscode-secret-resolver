@@ -3,15 +3,14 @@
         "module": "commonjs",
         "target": "ES2022",
         "lib": ["ES2022"],
-        "types": ["node", "vscode"],
-        "outDir": "build",
-        "rootDir": "src",
+        "types": ["node", "vscode", "mocha"],
+        "outDir": "dist",
+        "rootDir": ".",
         "sourceMap": true,
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true
     },
-    "include": ["src/**/*"],
-    "exclude": ["node_modules", ".vscode-test"]
+    "include": ["src/**/*.ts", "spec/**/*.ts", "test/**/*.ts"]
 }

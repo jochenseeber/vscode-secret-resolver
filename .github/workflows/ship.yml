@@ -45,31 +45,31 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 25
+          node-version: 20
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm run check:lint
+      - run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
 
-      - run: xvfb-run -a pnpm run test
-        env:
-          DISPLAY: ":99"
+      - run: nx run check
+
+      - run: nx run test:unit
 
       - name: Package extension
-        run: pnpm run package ${{ env.IS_PRERELEASE == 'true' && '-- --pre-release' || '' }}
+        run: nx run package:bin
 
       - name: Create GitHub release
-        run: pnpm run ship:github
+        run: nx run ship:github
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to VS Code Marketplace
-        run: pnpm run ship:marketplace
+        run: nx run ship:marketplace
         env:
           AZURE_DEVOPS_TOKEN: ${{ secrets['AZURE_DEVOPS_TOKEN'] }}
 
       - name: Publish to Open VSX
-        run: pnpm run ship:openvsx
+        run: nx run ship:openvsx
         env:
           OPENVSX_TOKEN: ${{ secrets['OPENVSX_TOKEN'] }}

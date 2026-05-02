@@ -1,22 +1,22 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { ROOT, runEntrypoint } from "./util.ts";
+import { readFileSync, writeFileSync } from "node:fs"
+import { ROOT, runEntrypoint } from "./util.ts"
 
-import { Resvg } from "@resvg/resvg-js";
-import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { Resvg } from "@resvg/resvg-js"
+import { createRequire } from "node:module"
+import { resolve } from "node:path"
 
-const require = createRequire(import.meta.url);
+const require = createRequire(import.meta.url)
 
 export function generateIcon(): void {
-    const lockSvgPath = require.resolve("@tabler/icons/outline/lock.svg");
-    const source = readFileSync(lockSvgPath, "utf8");
-    const innerMatch = source.match(/<svg[^>]*>([\s\S]*?)<\/svg>/);
+    const lockSvgPath = require.resolve("@tabler/icons/outline/lock.svg")
+    const source = readFileSync(lockSvgPath, "utf8")
+    const innerMatch = source.match(/<svg[^>]*>([\s\S]*?)<\/svg>/)
 
     if (!innerMatch) {
-        throw new Error(`Could not parse Tabler icon at ${lockSvgPath}`);
+        throw new Error(`Could not parse Tabler icon at ${lockSvgPath}`)
     }
 
-    const paths = innerMatch[1].trim();
+    const paths = innerMatch[1].trim()
 
     const composed = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 24 24">
   <defs>
@@ -29,13 +29,13 @@ export function generateIcon(): void {
     ${paths}
   </g>
 </svg>
-`;
+`
 
-    const pngOut = resolve(ROOT, "images/icon.png");
-    const resvg = new Resvg(composed);
-    const pngData = resvg.render().asPng();
+    const pngOut = resolve(ROOT, "images/icon.png")
+    const resvg = new Resvg(composed)
+    const pngData = resvg.render().asPng()
 
-    writeFileSync(pngOut, pngData);
+    writeFileSync(pngOut, pngData)
 }
 
-runEntrypoint(import.meta.url, generateIcon);
+runEntrypoint(import.meta.url, generateIcon)

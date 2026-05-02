@@ -17,22 +17,24 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 25
+          node-version: 20
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm run check:format
+      - run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
 
-      - run: pnpm run check:lint
+      - run: nx run check
 
-      - run: pnpm run compile
+      - run: nx run build
 
-      - run: xvfb-run -a pnpm run test
+      - run: nx run test:unit
+
+      - run: xvfb-run -a nx run test:integration
         env:
           DISPLAY: ":99"
 
-      - run: pnpm run package
+      - run: vsce package --out pkg/
 
       - uses: actions/upload-artifact@v7
         with:

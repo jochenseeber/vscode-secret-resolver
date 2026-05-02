@@ -37,6 +37,7 @@ public final class TestJavaLaunch {
     }
 
     private static boolean shouldPrint(Map.Entry<String, String> entry) {
-        return entry.getKey().startsWith("TEST_");
+        String key = entry.getKey();
+        return key.startsWith("TEST_") || key.startsWith("OP_");
     }
 }

@@ -3,9 +3,9 @@
     "tasks": [
         {
             "type": "shell",
-            "command": "pnpm run compile",
+            "command": "nx run build --no-tui",
             "problemMatcher": "$tsc",
-            "label": "pnpm: compile",
+            "label": "nx: compile",
             "group": {
                 "kind": "build",
                 "isDefault": true
@@ -13,9 +13,9 @@
         },
         {
             "type": "shell",
-            "command": "pnpm run watch",
+            "command": "nx run watch",
             "problemMatcher": "$tsc-watch",
-            "label": "pnpm: watch",
+            "label": "nx: watch",
             "isBackground": true
         }
     ]

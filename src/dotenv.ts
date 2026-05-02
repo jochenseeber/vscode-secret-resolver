@@ -1,6 +1,6 @@
-import { promises as fs } from "node:fs";
+import { promises as fs } from "node:fs"
 
-import type { StringEnvMap } from "./envHelpers";
+import type { StringEnvMap } from "./envHelpers"
 
 /**
  * Thrown by `parseEnvFile` when the file does not exist. The caller can
@@ -8,12 +8,12 @@ import type { StringEnvMap } from "./envHelpers";
  * whether to abort or warn-and-continue.
  */
 export class EnvFileNotFoundError extends Error {
-    readonly path: string;
+    readonly path: string
 
     constructor(path: string) {
-        super(`envFile not found: ${path}`);
-        this.name = "EnvFileNotFoundError";
-        this.path = path;
+        super(`envFile not found: ${path}`)
+        this.name = "EnvFileNotFoundError"
+        this.path = path
     }
 }
 
@@ -25,69 +25,69 @@ export class EnvFileNotFoundError extends Error {
  * value (matches VS Code's tolerant behavior).
  */
 export async function parseEnvFile(path: string): Promise<StringEnvMap> {
-    let content: string;
+    let content: string
 
     try {
-        content = await fs.readFile(path, "utf8");
+        content = await fs.readFile(path, "utf8")
     }
     catch (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-            throw new EnvFileNotFoundError(path);
+            throw new EnvFileNotFoundError(path)
         }
 
-        throw err;
+        throw err
     }
 
     if (content.charCodeAt(0) === 0xFEFF) {
-        content = content.slice(1);
+        content = content.slice(1)
     }
 
-    const out: StringEnvMap = {};
+    const out: StringEnvMap = {}
 
     for (const rawLine of content.split(/\r?\n/)) {
-        const line = rawLine.trimStart();
+        const line = rawLine.trimStart()
 
         if (line.length === 0 || line.startsWith("#")) {
-            continue;
+            continue
         }
 
-        const stripped = line.startsWith("export ") ? line.slice(7) : line;
-        const eq = stripped.indexOf("=");
+        const stripped = line.startsWith("export ") ? line.slice(7) : line
+        const eq = stripped.indexOf("=")
 
         if (eq <= 0) {
-            continue;
+            continue
         }
 
-        const key = stripped.slice(0, eq).trim();
+        const key = stripped.slice(0, eq).trim()
 
         if (key.length === 0) {
-            continue;
+            continue
         }
 
-        let value = stripped.slice(eq + 1);
-        value = stripValueQuotes(value);
-        out[key] = value;
+        let value = stripped.slice(eq + 1)
+        value = stripValueQuotes(value)
+        out[key] = value
     }
 
-    return out;
+    return out
 }
 
 function stripValueQuotes(value: string): string {
     if (value.length < 2) {
-        return value;
+        return value
     }
 
-    const first = value[0];
-    const last = value[value.length - 1];
+    const first = value[0]
+    const last = value[value.length - 1]
 
     if ((first === "\"" || first === "'") && first === last) {
-        return value.slice(1, -1);
+        return value.slice(1, -1)
     }
 
-    return value;
+    return value
 }
 
-const SAFE_UNQUOTED = /^[A-Za-z0-9_./:@+\-]+$/;
+const SAFE_UNQUOTED = /^[A-Za-z0-9_./:@+\-]+$/
 
 /**
  * Serializes an env map to a dotenv-formatted string accepted by `op run
@@ -97,18 +97,18 @@ const SAFE_UNQUOTED = /^[A-Za-z0-9_./:@+\-]+$/;
  * non-empty.
  */
 export function formatDotenv(env: StringEnvMap): string {
-    const lines: string[] = [];
+    const lines: string[] = []
 
     for (const [key, value] of Object.entries(env)) {
-        lines.push(`${key}=${formatValue(value)}`);
+        lines.push(`${key}=${formatValue(value)}`)
     }
 
-    return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+    return lines.length > 0 ? `${lines.join("\n")}\n` : ""
 }
 
 function formatValue(value: string): string {
     if (value.length > 0 && SAFE_UNQUOTED.test(value)) {
-        return value;
+        return value
     }
 
     const escaped = value
@@ -116,7 +116,7 @@ function formatValue(value: string): string {
         .replace(/"/g, "\\\"")
         .replace(/\$/g, "\\$")
         .replace(/\n/g, "\\n")
-        .replace(/\r/g, "\\r");
+        .replace(/\r/g, "\\r")
 
-    return `"${escaped}"`;
+    return `"${escaped}"`
 }

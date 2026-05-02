@@ -1,10 +1,10 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 
-import type { TempDirRegistry } from "./debugAdapterProxy";
+import type { TempDirRegistry } from "./debugAdapterProxy"
 
-export const TEMP_DIR_PREFIX = "secret-resolver-";
+export const TEMP_DIR_PREFIX = "secret-resolver-"
 
 /**
  * In-process registry of temp dirs the trackers have created. Each entry is
@@ -13,24 +13,24 @@ export const TEMP_DIR_PREFIX = "secret-resolver-";
  * signal-handler cleanup.
  */
 export class InMemoryTempDirRegistry implements TempDirRegistry {
-    private readonly dirs = new Set<string>();
+    private readonly dirs = new Set<string>()
 
     add(dir: string): void {
-        this.dirs.add(dir);
+        this.dirs.add(dir)
     }
 
     remove(dir: string): void {
-        this.dirs.delete(dir);
+        this.dirs.delete(dir)
     }
 
     snapshot(): string[] {
-        return [...this.dirs];
+        return [...this.dirs]
     }
 
     drain(): string[] {
-        const snapshot = [...this.dirs];
-        this.dirs.clear();
-        return snapshot;
+        const snapshot = [...this.dirs]
+        this.dirs.clear()
+        return snapshot
     }
 }
 
@@ -41,7 +41,7 @@ export class InMemoryTempDirRegistry implements TempDirRegistry {
 export function cleanupRegistry(registry: InMemoryTempDirRegistry): void {
     for (const dir of registry.drain()) {
         try {
-            fs.rmSync(dir, { recursive: true, force: true });
+            fs.rmSync(dir, { recursive: true, force: true })
         }
         catch {
             // best-effort
@@ -58,36 +58,36 @@ export function cleanupRegistry(registry: InMemoryTempDirRegistry): void {
  */
 export function sweepStaleTempDirs(): void {
     try {
-        const root = os.tmpdir();
-        const entries = fs.readdirSync(root, { withFileTypes: true });
+        const root = os.tmpdir()
+        const entries = fs.readdirSync(root, { withFileTypes: true })
 
         for (const entry of entries) {
             if (!entry.isDirectory() || !entry.name.startsWith(TEMP_DIR_PREFIX)) {
-                continue;
+                continue
             }
 
-            const dir = path.join(root, entry.name);
-            const pidPath = path.join(dir, ".pid");
-            let pid: number | undefined;
+            const dir = path.join(root, entry.name)
+            const pidPath = path.join(dir, ".pid")
+            let pid: number | undefined
 
             try {
-                const raw = fs.readFileSync(pidPath, "utf8").trim();
-                const parsed = Number.parseInt(raw, 10);
+                const raw = fs.readFileSync(pidPath, "utf8").trim()
+                const parsed = Number.parseInt(raw, 10)
 
                 if (Number.isInteger(parsed) && parsed > 0) {
-                    pid = parsed;
+                    pid = parsed
                 }
             }
             catch {
-                continue;
+                continue
             }
 
             if (pid === undefined || isPidAlive(pid)) {
-                continue;
+                continue
             }
 
             try {
-                fs.rmSync(dir, { recursive: true, force: true });
+                fs.rmSync(dir, { recursive: true, force: true })
             }
             catch {
                 // best-effort
@@ -101,16 +101,16 @@ export function sweepStaleTempDirs(): void {
 
 function isPidAlive(pid: number): boolean {
     try {
-        process.kill(pid, 0);
-        return true;
+        process.kill(pid, 0)
+        return true
     }
     catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
+        const code = (err as NodeJS.ErrnoException).code
 
         if (code === "EPERM") {
-            return true;
+            return true
         }
 
-        return false;
+        return false
     }
 }
