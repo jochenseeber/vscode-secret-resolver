@@ -33,6 +33,7 @@ function makeTrackerWithStubs(opts?: {
     registry?: TempDirRegistry
     sessionConfig?: SecretResolverSessionConfig
     descendantsByRoot?: Map<number, ProcessInfo[]>
+    getServiceAccountToken?: (tag: string) => string | undefined
 }): {
     tracker: vscode.DebugAdapterTracker | undefined
     kills: KillCall[]
@@ -66,9 +67,9 @@ function makeTrackerWithStubs(opts?: {
     const getDescendants: GetProcessTreeFn = async (root) => descendantsByRoot.get(root) ?? []
 
     const session = {
-        configuration: opts?.sessionConfig
-            ? { [SECRET_RESOLVER_CONFIG_FIELD]: opts.sessionConfig }
-            : {},
+        configuration: {
+            ...(opts?.sessionConfig ? { [SECRET_RESOLVER_CONFIG_FIELD]: opts.sessionConfig } : {}),
+        },
     } as unknown as vscode.DebugSession
     const tracker = new SecretDebugAdapterTrackerFactory(
         registry,
@@ -76,6 +77,7 @@ function makeTrackerWithStubs(opts?: {
         setKillTimer,
         clearKillTimer,
         getDescendants,
+        opts?.getServiceAccountToken ?? (() => undefined),
     ).createDebugAdapterTracker(session) as
         | vscode.DebugAdapterTracker
         | undefined
@@ -179,7 +181,7 @@ function makeWrappedTree(opts: {
 
 function makeRequest(
     args: string[],
-    env: Record<string, string> = {},
+    env: Record<string, string | null> = {},
 ): DebugProtocol.RunInTerminalRequest {
     return {
         seq: 1,
@@ -366,6 +368,22 @@ suite("runtime integration", () => {
         const registry = new InMemoryTempDirRegistry()
         const tracker = makeTracker(registry)
         const message = makeRequest(["node", "app.js"], {})
+        const argsBefore = [...message.arguments.args]
+
+        tracker?.onDidSendMessage?.(message)
+
+        assert.deepStrictEqual(message.arguments.args, argsBefore)
+        assert.strictEqual(registry.snapshot().length, 0)
+    })
+
+    test("no-op when env has only null values and no opRunEnv in sessionConfig", () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const registry = new InMemoryTempDirRegistry()
+        const tracker = makeTracker(registry)
+        const message = makeRequest(["node", "app.js"], { FOO: null, BAR: null })
         const argsBefore = [...message.arguments.args]
 
         tracker?.onDidSendMessage?.(message)
@@ -1090,6 +1108,56 @@ suite("runtime integration", () => {
         assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGHUP" }])
     })
 
+    test("token-tag: double-wraps with op run --env-file=token.env when tokenTag is set", () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const registry = new InMemoryTempDirRegistry()
+        const { tracker } = makeTrackerWithStubs({
+            registry,
+            sessionConfig: { steps: [], tokenTag: "my-tag" },
+            getServiceAccountToken: (tag) => tag === "my-tag" ? "token-value" : undefined,
+        })
+        assert.ok(tracker)
+
+        const message = makeRequest(["node", "app.js"], { DB: "op://v/i/db" })
+        tracker!.onDidSendMessage?.(message)
+
+        const args = message.arguments.args
+        // Outer: op run --env-file=token.env -- <inner>
+        // Inner: op run --env-file=env -- node app.js
+        assert.strictEqual(args[0], configuredOpPath(), "outer: op path")
+        assert.strictEqual(args[1], "run", "outer: run")
+        assert.ok(
+            args[2].startsWith("--env-file=") && args[2].endsWith("token.env"),
+            `outer: token.env flag, got ${args[2]}`,
+        )
+        assert.strictEqual(args[3], "--", "outer: --")
+        assert.strictEqual(args[4], configuredOpPath(), "inner: op path")
+        assert.strictEqual(args[5], "run", "inner: run")
+        assert.ok(
+            args[6].startsWith("--env-file=") && !args[6].endsWith("token.env"),
+            `inner: env flag, got ${args[6]}`,
+        )
+        assert.strictEqual(args[7], "--", "inner: --")
+        assert.deepStrictEqual(args.slice(8), ["node", "app.js"])
+
+        // Token file contains the service account token.
+        const tokenEnvFilePath = args[2].slice("--env-file=".length)
+        const tokenEnv = readDotenvSync(tokenEnvFilePath)
+        assert.strictEqual(tokenEnv["OP_SERVICE_ACCOUNT_TOKEN"], "token-value")
+
+        // Secret refs live in the inner env file.
+        const innerEnvFilePath = args[6].slice("--env-file=".length)
+        const innerEnv = readDotenvSync(innerEnvFilePath)
+        assert.strictEqual(innerEnv["DB"], "op://v/i/db")
+
+        assert.deepStrictEqual(message.arguments.env, {})
+
+        cleanupRegistry(registry)
+    })
+
     test("token-tag: single-wraps (no token.env) when tokenTag is absent", () => {
         if (process.platform === "win32") {
             return
@@ -1110,6 +1178,107 @@ suite("runtime integration", () => {
         assert.deepStrictEqual(args.slice(4), ["node", "app.js"])
 
         assert.deepStrictEqual(message.arguments.env, {})
+        cleanupRegistry(registry)
+    })
+
+    test("token-tag: arguments.env is {} even when token is injected", () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const registry = new InMemoryTempDirRegistry()
+        const { tracker } = makeTrackerWithStubs({
+            registry,
+            sessionConfig: { steps: [], tokenTag: "my-tag" },
+            getServiceAccountToken: () => "token-value",
+        })
+        assert.ok(tracker)
+
+        const message = makeRequest(["node", "app.js"], { FOO: "bar" })
+        tracker!.onDidSendMessage?.(message)
+
+        assert.deepStrictEqual(message.arguments.env, {})
+        cleanupRegistry(registry)
+    })
+
+    test("account-id: single-wrap passes --account when accountId is set", () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const registry = new InMemoryTempDirRegistry()
+        const { tracker } = makeTrackerWithStubs({
+            registry,
+            sessionConfig: { steps: [], accountId: "SOME_ACCOUNT_ID" },
+        })
+        assert.ok(tracker)
+
+        const message = makeRequest(["node", "app.js"], { DB: "op://v/i/db" })
+        tracker!.onDidSendMessage?.(message)
+
+        const args = message.arguments.args
+        assert.strictEqual(args[0], configuredOpPath())
+        assert.strictEqual(args[1], "run")
+        assert.strictEqual(args[2], "--account")
+        assert.strictEqual(args[3], "SOME_ACCOUNT_ID")
+        assert.ok(args[4].startsWith("--env-file="), `expected --env-file= at index 4, got ${args[4]}`)
+        assert.strictEqual(args[5], "--")
+        assert.deepStrictEqual(args.slice(6), ["node", "app.js"])
+
+        const envFilePath = args[4].slice("--env-file=".length)
+        const env = readDotenvSync(envFilePath)
+        assert.strictEqual(env["DB"], "op://v/i/db")
+
+        cleanupRegistry(registry)
+    })
+
+    test("account-id: double-wrap passes --account to both wraps", () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const registry = new InMemoryTempDirRegistry()
+        const { tracker } = makeTrackerWithStubs({
+            registry,
+            sessionConfig: { steps: [], tokenTag: "my-tag", accountId: "SOME_ACCOUNT_ID" },
+            getServiceAccountToken: () => "token-value",
+        })
+        assert.ok(tracker)
+
+        const message = makeRequest(["node", "app.js"], { DB: "op://v/i/db" })
+        tracker!.onDidSendMessage?.(message)
+
+        const args = message.arguments.args
+        // Outer: op run --account SOME_ACCOUNT_ID --env-file=token.env -- <inner>
+        assert.strictEqual(args[0], configuredOpPath(), "outer: op path")
+        assert.strictEqual(args[1], "run", "outer: run")
+        assert.strictEqual(args[2], "--account", "outer: --account")
+        assert.strictEqual(args[3], "SOME_ACCOUNT_ID", "outer: account id")
+        assert.ok(
+            args[4].startsWith("--env-file=") && args[4].endsWith("token.env"),
+            `outer: token.env flag, got ${args[4]}`,
+        )
+        assert.strictEqual(args[5], "--", "outer: --")
+        // Inner: op run --account SOME_ACCOUNT_ID --env-file=env -- node app.js
+        assert.strictEqual(args[6], configuredOpPath(), "inner: op path")
+        assert.strictEqual(args[7], "run", "inner: run")
+        assert.strictEqual(args[8], "--account", "inner: --account")
+        assert.strictEqual(args[9], "SOME_ACCOUNT_ID", "inner: account id")
+        assert.ok(
+            args[10].startsWith("--env-file=") && !args[10].endsWith("token.env"),
+            `inner: env flag, got ${args[10]}`,
+        )
+        assert.strictEqual(args[11], "--", "inner: --")
+        assert.deepStrictEqual(args.slice(12), ["node", "app.js"])
+
+        const tokenEnvFilePath = args[4].slice("--env-file=".length)
+        const tokenEnv = readDotenvSync(tokenEnvFilePath)
+        assert.strictEqual(tokenEnv["OP_SERVICE_ACCOUNT_TOKEN"], "token-value")
+
+        const envFilePath = args[10].slice("--env-file=".length)
+        const env = readDotenvSync(envFilePath)
+        assert.strictEqual(env["DB"], "op://v/i/db")
+
         cleanupRegistry(registry)
     })
 

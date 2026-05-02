@@ -11,11 +11,17 @@ import {
 import { SecretCache } from "../src/secretCache"
 
 class FakeRunner implements OpInjectRunner {
-    calls: string[][] = []
+    calls: Array<{ refs: string[]; token: string | undefined; account: string | undefined }> = []
     nextResult: Map<string, string> | Error = new Map()
 
-    async resolve(refs: readonly string[]): Promise<Map<string, string>> {
-        this.calls.push([...refs])
+    async resolve(
+        refs: readonly string[],
+        _opPath: string,
+        _signal?: AbortSignal,
+        token?: string,
+        account?: string,
+    ): Promise<Map<string, string>> {
+        this.calls.push({ refs: [...refs], token, account })
 
         if (this.nextResult instanceof Error) {
             throw this.nextResult
@@ -130,10 +136,9 @@ suite("resolveLaunchConfig", () => {
             API: "API-VALUE",
             PLAIN: "literal",
         })
-        assert.deepStrictEqual(runner.calls, [[
-            "op://v/i/db",
-            "op://v/i/api",
-        ]])
+        assert.deepStrictEqual(runner.calls, [
+            { refs: ["op://v/i/db", "op://v/i/api"], token: undefined, account: undefined },
+        ])
     })
 
     test("uses cached resolutions on a second call without re-spawning op", async () => {
@@ -297,8 +302,9 @@ suite("resolveLaunchConfig", () => {
         assert.strictEqual(runner.calls.length, 1)
     })
 
-    test("MODE=op on a terminal console leaves refs intact", async () => {
+    test("MODE=cache with integratedTerminal resolves via inject", async () => {
         const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "RESOLVED"]])
         const { deps } = makeDeps({ runner })
         const config = {
             type: "node",
@@ -307,12 +313,11 @@ suite("resolveLaunchConfig", () => {
             console: "integratedTerminal",
             env: {
                 DB: "op://v/i/db",
-                SECRET_RESOLVER_MODE: "op",
+                SECRET_RESOLVER_MODE: "cache",
             },
         }
         const result = await resolveLaunchConfig(config, deps)
-        assert.deepStrictEqual(result?.env, { DB: "op://v/i/db" })
-        assert.strictEqual(runner.calls.length, 0)
+        assert.deepStrictEqual(result?.env, { DB: "RESOLVED" })
     })
 
     test("aborts the launch when op inject returns ENOENT", async () => {
@@ -494,74 +499,51 @@ suite("resolveLaunchConfig", () => {
         )
     })
 
-    test("ACCOUNT_EMAIL_VAR resolves plain email address and strips var from env", async () => {
+    test("TOKEN_TAG_VAR is stripped from final env", async () => {
         const { deps } = makeDeps({
-            resolveAccountForEmail: async () => "acct-uuid-from-email",
+            resolveTokenForTag: async () => "tok",
         })
         const config = {
             type: "node",
             name: "x",
             request: "launch",
             console: "integratedTerminal",
-            env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com" },
-        }
-        const result = await resolveLaunchConfig(config, deps)
-        assert.ok(result)
-        assert.ok(!("SECRET_RESOLVER_ACCOUNT_EMAIL" in (result!.env as Record<string, unknown>)))
-        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as SecretResolverSessionConfig | undefined
-        assert.strictEqual(sessionConfig?.accountId, "acct-uuid-from-email")
-    })
-
-    test("ACCOUNT_GIT_CONFIG_VAR resolves via resolveAccountForGitConfig and strips var from env", async () => {
-        const gitConfigCalls: string[] = []
-        const { deps } = makeDeps({
-            resolveAccountForGitConfig: async (subdir) => {
-                gitConfigCalls.push(subdir)
-                return "acct-uuid-from-git"
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
             },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        assert.ok(!("SECRET_RESOLVER_TOKEN_TAG" in (result!.env as Record<string, unknown>)))
+    })
+
+    test("token is passed as 4th arg to runner.resolve in cache mode", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const { deps } = makeDeps({
+            runner,
+            resolveTokenForTag: async () => "my-token",
         })
         const config = {
             type: "node",
             name: "x",
             request: "launch",
-            console: "integratedTerminal",
-            env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: "." },
-        }
-        const result = await resolveLaunchConfig(config, deps)
-        assert.ok(result)
-        assert.ok(!("SECRET_RESOLVER_ACCOUNT_GIT_CONFIG" in (result!.env as Record<string, unknown>)))
-        assert.deepStrictEqual(gitConfigCalls, ["."])
-        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as SecretResolverSessionConfig | undefined
-        assert.strictEqual(sessionConfig?.accountId, "acct-uuid-from-git")
-    })
-
-    test("empty ACCOUNT_GIT_CONFIG_VAR is treated as off", async () => {
-        const gitConfigCalls: string[] = []
-        const { deps } = makeDeps({
-            resolveAccountForGitConfig: async (subdir) => {
-                gitConfigCalls.push(subdir)
-                return "acct-uuid-from-git"
+            console: "internalConsole",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
             },
-        })
-        const config = {
-            type: "node",
-            name: "x",
-            request: "launch",
-            console: "integratedTerminal",
-            env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: "" },
         }
-        const result = await resolveLaunchConfig(config, deps)
-        assert.ok(result)
-        assert.strictEqual(gitConfigCalls.length, 0)
+        await resolveLaunchConfig(config, deps)
+        assert.strictEqual(runner.calls.length, 1)
+        assert.strictEqual(runner.calls[0].token, "my-token")
     })
 
-    test("ACCOUNT_EMAIL_VAR takes priority over ACCOUNT_GIT_CONFIG_VAR", async () => {
-        const gitConfigCalls: string[] = []
-        const { deps } = makeDeps({
-            resolveAccountForEmail: async () => "acct-uuid-from-email",
-            resolveAccountForGitConfig: async (subdir) => {
-                gitConfigCalls.push(subdir)
-                return "acct-uuid-from-git"
+    test("token resolution failure aborts launch with error", async () => {
+        const { deps, recorder } = makeDeps({
+            resolveTokenForTag: async () => {
+                throw new Error("vault not found")
             },
         })
         const config = {
@@ -570,20 +552,347 @@ suite("resolveLaunchConfig", () => {
             request: "launch",
             console: "integratedTerminal",
             env: {
-                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
-                SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: ".",
+                FOO: "bar",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.strictEqual(result, undefined)
+        assert.strictEqual(recorder.errors.length, 1)
+        assert.match(recorder.errors[0], /vault not found/)
+    })
+
+    test("tokenTag attached to __secretResolver for op-mode terminal launches", async () => {
+        const { deps } = makeDeps({
+            resolveTokenForTag: async () => "tok",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_MODE: "op",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
             },
         }
         const result = await resolveLaunchConfig(config, deps)
         assert.ok(result)
-        assert.strictEqual(gitConfigCalls.length, 0)
-        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as SecretResolverSessionConfig | undefined
-        assert.strictEqual(sessionConfig?.accountId, "acct-uuid-from-email")
+        const sessionConfig = (result! as Record<string, unknown>)[
+            SECRET_RESOLVER_CONFIG_FIELD
+        ] as SecretResolverSessionConfig | undefined
+        assert.ok(sessionConfig)
+        assert.strictEqual(sessionConfig!.tokenTag, "my-tag")
+        assert.deepStrictEqual(sessionConfig!.steps, [])
     })
 
-    test("error from resolveAccountForGitConfig aborts launch with error message", async () => {
+    test("tokenTag not set in __secretResolver for cache mode", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const { deps } = makeDeps({
+            runner,
+            resolveTokenForTag: async () => "tok",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_MODE: "cache",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        )
+    })
+
+    test("tokenTag not set in __secretResolver for internalConsole", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map()
+        const { deps } = makeDeps({
+            runner,
+            resolveTokenForTag: async () => "tok",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        )
+    })
+
+    test("__secretResolver with steps and tokenTag set together", async () => {
+        const { deps } = makeDeps({
+            resolveTokenForTag: async () => "tok",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_MODE: "op",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+                SECRET_RESOLVER_SIGNAL_ON_STOP: "TERM+KILL",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        const sessionConfig = (result! as Record<string, unknown>)[
+            SECRET_RESOLVER_CONFIG_FIELD
+        ] as SecretResolverSessionConfig | undefined
+        assert.ok(sessionConfig)
+        assert.strictEqual(sessionConfig!.tokenTag, "my-tag")
+        assert.deepStrictEqual(sessionConfig!.steps, [
+            { delaySec: 0, signal: "TERM" },
+            { delaySec: 30, signal: "KILL" },
+        ])
+    })
+
+    test("ACCOUNT_ID_VAR is stripped from final env", async () => {
+        const { deps } = makeDeps({})
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_ID: "SOME_ACCOUNT_ID",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        assert.ok(!("SECRET_RESOLVER_ACCOUNT_ID" in (result!.env as Record<string, unknown>)))
+    })
+
+    test("accountId is forwarded as 4th arg to resolveTokenForTag", async () => {
+        const tokenTagCalls: Array<{ tag: string; account: string | undefined }> = []
+        const { deps } = makeDeps({
+            resolveTokenForTag: async (tag, _opPath, _signal, account) => {
+                tokenTagCalls.push({ tag, account })
+                return "tok"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+                SECRET_RESOLVER_ACCOUNT_ID: "SOME_ACCOUNT_ID",
+            },
+        }
+        await resolveLaunchConfig(config, deps)
+        assert.strictEqual(tokenTagCalls.length, 1)
+        assert.strictEqual(tokenTagCalls[0].account, "SOME_ACCOUNT_ID")
+    })
+
+    test("accountId is forwarded as 5th arg to runner.resolve", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const { deps } = makeDeps({ runner })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_ACCOUNT_ID: "SOME_ACCOUNT_ID",
+            },
+        }
+        await resolveLaunchConfig(config, deps)
+        assert.strictEqual(runner.calls.length, 1)
+        assert.strictEqual(runner.calls[0].account, "SOME_ACCOUNT_ID")
+    })
+
+    test("accountId is attached to __secretResolver for terminal launches", async () => {
+        const { deps } = makeDeps({})
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_ID: "SOME_ACCOUNT_ID",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        const sessionConfig = (result! as Record<string, unknown>)[
+            SECRET_RESOLVER_CONFIG_FIELD
+        ] as SecretResolverSessionConfig | undefined
+        assert.ok(sessionConfig)
+        assert.strictEqual(sessionConfig!.accountId, "SOME_ACCOUNT_ID")
+        assert.deepStrictEqual(sessionConfig!.steps, [])
+    })
+
+    test("accountId is absent from __secretResolver for internalConsole", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map()
+        const { deps } = makeDeps({ runner })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_ID: "SOME_ACCOUNT_ID",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        )
+    })
+
+    test("ACCOUNT_EMAIL_VAR is stripped from final env", async () => {
+        const { deps } = makeDeps({
+            resolveAccountForEmail: async () => "acct-uuid-from-email",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        assert.ok(!("SECRET_RESOLVER_ACCOUNT_EMAIL" in (result!.env as Record<string, unknown>)))
+    })
+
+    test("accountId resolved from email is forwarded to resolveTokenForTag", async () => {
+        const tokenTagCalls: Array<{ tag: string; account: string | undefined }> = []
+        const { deps } = makeDeps({
+            resolveAccountForEmail: async () => "acct-uuid-from-email",
+            resolveTokenForTag: async (tag, _opPath, _signal, account) => {
+                tokenTagCalls.push({ tag, account })
+                return "tok"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
+        }
+        await resolveLaunchConfig(config, deps)
+        assert.strictEqual(tokenTagCalls.length, 1)
+        assert.strictEqual(tokenTagCalls[0].account, "acct-uuid-from-email")
+    })
+
+    test("accountId resolved from email is forwarded to runner.resolve", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const { deps } = makeDeps({
+            runner,
+            resolveAccountForEmail: async () => "acct-uuid-from-email",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
+        }
+        await resolveLaunchConfig(config, deps)
+        assert.strictEqual(runner.calls.length, 1)
+        assert.strictEqual(runner.calls[0].account, "acct-uuid-from-email")
+    })
+
+    test("accountId from email is attached to __secretResolver for terminal launches", async () => {
+        const { deps } = makeDeps({
+            resolveAccountForEmail: async () => "acct-uuid-from-email",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        const sessionConfig = (result! as Record<string, unknown>)[
+            SECRET_RESOLVER_CONFIG_FIELD
+        ] as SecretResolverSessionConfig | undefined
+        assert.ok(sessionConfig)
+        assert.strictEqual(sessionConfig!.accountId, "acct-uuid-from-email")
+        assert.deepStrictEqual(sessionConfig!.steps, [])
+    })
+
+    test("ACCOUNT_ID_VAR takes priority over ACCOUNT_EMAIL_VAR when both are set", async () => {
+        const emailResolverCalls: string[] = []
+        const { deps } = makeDeps({
+            resolveAccountForEmail: async (value) => {
+                emailResolverCalls.push(value)
+                return "acct-uuid-from-email"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_ID: "EXPLICIT_ACCOUNT",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.ok(result)
+        assert.strictEqual(emailResolverCalls.length, 0)
+        const sessionConfig = (result! as Record<string, unknown>)[
+            SECRET_RESOLVER_CONFIG_FIELD
+        ] as SecretResolverSessionConfig | undefined
+        assert.ok(sessionConfig)
+        assert.strictEqual(sessionConfig!.accountId, "EXPLICIT_ACCOUNT")
+    })
+
+    test("error from resolveAccountForEmail aborts launch with error message", async () => {
         const { deps, recorder } = makeDeps({
-            resolveAccountForGitConfig: async () => {
+            resolveAccountForEmail: async () => {
                 throw new Error("no matching 1Password account")
             },
         })
@@ -592,7 +901,10 @@ suite("resolveLaunchConfig", () => {
             name: "x",
             request: "launch",
             console: "integratedTerminal",
-            env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: "." },
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
         }
         const result = await resolveLaunchConfig(config, deps)
         assert.strictEqual(result, undefined)

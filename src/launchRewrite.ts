@@ -28,6 +28,14 @@ export function buildOpRunArgs(
     opPath: string,
     envFilePath: string,
     args: readonly string[],
+    account?: string,
 ): string[] {
-    return [opPath, "run", `--env-file=${envFilePath}`, "--", ...args]
+    return [
+        opPath,
+        "run",
+        ...(account !== undefined ? ["--account", account] : []),
+        `--env-file=${envFilePath}`,
+        "--",
+        ...args,
+    ]
 }

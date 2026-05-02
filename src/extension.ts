@@ -1,6 +1,7 @@
 import * as vscode from "vscode"
 
-import { createDefaultProvider } from "./configProvider"
+import type { GitEmailStore } from "./accountResolver"
+import { createDefaultProvider, createGitEmailStore } from "./configProvider"
 import { SecretDebugAdapterTrackerFactory } from "./debugAdapterProxy"
 import { SecretCache } from "./secretCache"
 import { cleanupRegistry, InMemoryTempDirRegistry, sweepStaleTempDirs } from "./tempDirRegistry"
@@ -10,13 +11,17 @@ const TERMINATION_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const
 
 let activeCache: SecretCache | undefined
 let activeRegistry: InMemoryTempDirRegistry | undefined
+let activeGitEmailStore: GitEmailStore | undefined
 let signalHandlersInstalled = false
 
 export function activate(context: vscode.ExtensionContext): void {
     const cache = new SecretCache()
     const registry = new InMemoryTempDirRegistry()
+    const gitEmailStore = createGitEmailStore(context.workspaceState)
+    gitEmailStore.clear()
     activeCache = cache
     activeRegistry = registry
+    activeGitEmailStore = gitEmailStore
 
     sweepStaleTempDirs()
     installProcessHandlers()
@@ -24,14 +29,24 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.debug.registerDebugConfigurationProvider(
             "*",
-            createDefaultProvider(cache),
+            createDefaultProvider(cache, gitEmailStore),
         ),
         vscode.debug.registerDebugAdapterTrackerFactory(
             "*",
-            new SecretDebugAdapterTrackerFactory(registry),
+            new SecretDebugAdapterTrackerFactory(
+                registry,
+                (pid, sig) => {
+                    process.kill(pid, sig)
+                },
+                setTimeout,
+                clearTimeout,
+                undefined,
+                (tag) => cache.get(`__token__:${tag}`),
+            ),
         ),
         vscode.commands.registerCommand(CLEAR_CACHE_COMMAND, () => {
             cache.clear()
+            gitEmailStore.clear()
             void vscode.window.showInformationMessage(
                 "Secret Resolver: cache cleared.",
             )
@@ -39,6 +54,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.workspace.onDidChangeConfiguration((event) => {
             if (event.affectsConfiguration("secretResolver.opPath")) {
                 cache.clear()
+                gitEmailStore.clear()
             }
         }),
     )
@@ -47,6 +63,9 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
     activeCache?.clear()
     activeCache = undefined
+
+    activeGitEmailStore?.clear()
+    activeGitEmailStore = undefined
 
     if (activeRegistry !== undefined) {
         cleanupRegistry(activeRegistry)

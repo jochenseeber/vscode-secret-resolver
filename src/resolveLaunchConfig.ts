@@ -2,6 +2,9 @@ import type * as vscode from "vscode"
 
 import { EnvFileNotFoundError } from "./dotenv"
 import {
+    ACCOUNT_EMAIL_VAR,
+    ACCOUNT_GIT_CONFIG_VAR,
+    ACCOUNT_ID_VAR,
     type EnvMap,
     findOpRefs,
     mergeEnv,
@@ -11,6 +14,7 @@ import {
     type SignalStep,
     type StringEnvMap,
     stripInternalEnvVars,
+    TOKEN_TAG_VAR,
 } from "./envHelpers"
 import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectRunner } from "./opInject"
 import type { SecretCache } from "./secretCache"
@@ -27,6 +31,8 @@ export const SECRET_RESOLVER_CONFIG_FIELD = "__secretResolver"
 
 export interface SecretResolverSessionConfig {
     steps: SignalStep[]
+    tokenTag?: string
+    accountId?: string
 }
 
 const TERMINAL_CONSOLES = new Set([
@@ -41,6 +47,9 @@ export interface ResolveDeps {
     getOpPath: () => string
     showError: (message: string) => void
     showWarning: (message: string) => void
+    resolveTokenForTag?: (tag: string, opPath: string, signal?: AbortSignal, account?: string) => Promise<string>
+    resolveAccountForEmail?: (email: string, opPath: string, signal?: AbortSignal) => Promise<string>
+    resolveAccountForGitConfig?: (subdir: string, opPath: string, signal?: AbortSignal) => Promise<string>
 }
 
 /**
@@ -95,7 +104,6 @@ export async function resolveLaunchConfig(
         : ""
     const mode = parseSecretResolverMode(
         typeof modeValue === "string" ? modeValue : null,
-        consoleKind,
     )
 
     if (mode === "op" && consoleKind === "internalConsole") {
@@ -108,13 +116,74 @@ export async function resolveLaunchConfig(
     const stripped = stripInternalEnvVars(merged)
     const useOpRun = mode === "op" && TERMINAL_CONSOLES.has(consoleKind)
 
+    const tokenTagValue = merged[TOKEN_TAG_VAR]
+    const tokenTag = typeof tokenTagValue === "string" && tokenTagValue.trim() !== ""
+        ? tokenTagValue.trim()
+        : null
+
+    const accountIdValue = merged[ACCOUNT_ID_VAR]
+    let accountId: string | null = typeof accountIdValue === "string" && accountIdValue.trim() !== ""
+        ? accountIdValue.trim()
+        : null
+
+    if (accountId === null) {
+        const emailValue = merged[ACCOUNT_EMAIL_VAR]
+        const email = typeof emailValue === "string" && emailValue.trim() !== ""
+            ? emailValue.trim()
+            : null
+
+        if (email !== null && deps.resolveAccountForEmail !== undefined) {
+            try {
+                accountId = await deps.resolveAccountForEmail(email, deps.getOpPath(), signal)
+            }
+            catch (err) {
+                deps.showError(`Secret Resolver: ${(err as Error).message}`)
+                return undefined
+            }
+        }
+    }
+
+    if (accountId === null) {
+        const gitConfigValue = merged[ACCOUNT_GIT_CONFIG_VAR]
+        const gitSubdir = typeof gitConfigValue === "string" && gitConfigValue.trim() !== ""
+            ? gitConfigValue.trim()
+            : null
+
+        if (gitSubdir !== null && deps.resolveAccountForGitConfig !== undefined) {
+            try {
+                accountId = await deps.resolveAccountForGitConfig(gitSubdir, deps.getOpPath(), signal)
+            }
+            catch (err) {
+                deps.showError(`Secret Resolver: ${(err as Error).message}`)
+                return undefined
+            }
+        }
+    }
+
+    let serviceAccountToken: string | undefined
+
+    if (tokenTag !== null && deps.resolveTokenForTag !== undefined) {
+        try {
+            serviceAccountToken = await deps.resolveTokenForTag(
+                tokenTag,
+                deps.getOpPath(),
+                signal,
+                accountId ?? undefined,
+            )
+        }
+        catch (err) {
+            deps.showError(`Secret Resolver: ${(err as Error).message}`)
+            return undefined
+        }
+    }
+
     let finalEnv: EnvMap
 
     if (useOpRun) {
         finalEnv = stripped
     }
     else {
-        const resolved = await resolveAllRefs(stripped, deps, signal)
+        const resolved = await resolveAllRefs(stripped, deps, signal, serviceAccountToken, accountId ?? undefined)
 
         if (resolved === undefined) {
             return undefined
@@ -135,8 +204,15 @@ export async function resolveLaunchConfig(
             : null,
     )
 
-    if (signalOnStop !== null && TERMINAL_CONSOLES.has(consoleKind)) {
-        const sessionConfig: SecretResolverSessionConfig = { steps: signalOnStop }
+    const attachSessionConfig = (signalOnStop !== null || (tokenTag !== null && useOpRun) || accountId !== null)
+        && TERMINAL_CONSOLES.has(consoleKind)
+
+    if (attachSessionConfig) {
+        const sessionConfig: SecretResolverSessionConfig = {
+            steps: signalOnStop ?? [],
+            ...(tokenTag !== null && useOpRun ? { tokenTag } : {}),
+            ...(accountId !== null ? { accountId } : {}),
+        }
         ;(next as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] = sessionConfig
     }
 
@@ -147,6 +223,8 @@ async function resolveAllRefs(
     env: EnvMap,
     deps: ResolveDeps,
     signal?: AbortSignal,
+    token?: string,
+    account?: string,
 ): Promise<Map<string, string> | undefined> {
     const refs = findOpRefs(env)
 
@@ -179,6 +257,8 @@ async function resolveAllRefs(
             missing,
             deps.getOpPath(),
             signal,
+            token,
+            account,
         )
     }
     catch (err) {

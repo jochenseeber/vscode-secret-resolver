@@ -4,6 +4,11 @@
             "id": "opAccountId",
             "type": "promptString",
             "description": "Enter the 1Password account ID to use for this launch"
+        },
+        {
+            "id": "opAccountEmail",
+            "type": "promptString",
+            "description": "Enter the 1Password account email address (e.g. user@example.com)"
         }
     ],
     "configurations": [
@@ -143,6 +148,87 @@
             "mainClass": "${workspaceFolder}/TestJavaLaunch.java",
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "Test Node Launch: Integrated Terminal (token tag)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "console": "integratedTerminal",
+            "env": {
+                "SECRET_RESOLVER_TOKEN_TAG": "token/development",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Node Launch: External Terminal (token tag)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "console": "externalTerminal",
+            "env": {
+                "SECRET_RESOLVER_TOKEN_TAG": "token/development",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Node Launch: Internal Console (token tag)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "console": "internalConsole",
+            "env": {
+                "SECRET_RESOLVER_TOKEN_TAG": "token/development",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Node Launch: Integrated Terminal (token tag + account email)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "console": "integratedTerminal",
+            "env": {
+                "SECRET_RESOLVER_TOKEN_TAG": "token/development",
+                "SECRET_RESOLVER_ACCOUNT_EMAIL": "${input:opAccountEmail}",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Node Launch: Integrated Terminal (token tag + account id)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "console": "integratedTerminal",
+            "env": {
+                "SECRET_RESOLVER_TOKEN_TAG": "token/development",
+                "SECRET_RESOLVER_ACCOUNT_ID": "${input:opAccountId}",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Node Launch: Integrated Terminal (token tag + account git config)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "console": "integratedTerminal",
+            "env": {
+                "SECRET_RESOLVER_ACCOUNT_GIT_CONFIG": ".",
+                "SECRET_RESOLVER_TOKEN_TAG": "token/development",
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
         }
     ]
 }

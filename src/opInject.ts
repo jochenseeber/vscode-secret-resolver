@@ -61,6 +61,8 @@ export interface OpInjectRunner {
         refs: readonly string[],
         opPath: string,
         signal?: AbortSignal,
+        token?: string,
+        account?: string,
     ): Promise<Map<string, string>>
 }
 
@@ -76,6 +78,8 @@ export class DefaultOpInjectRunner implements OpInjectRunner {
         refs: readonly string[],
         opPath: string,
         signal?: AbortSignal,
+        token?: string,
+        account?: string,
     ): Promise<Map<string, string>> {
         if (refs.length === 0) {
             return new Map()
@@ -88,13 +92,22 @@ export class DefaultOpInjectRunner implements OpInjectRunner {
 
         try {
             await writeFile(file, template, "utf8")
+            const env = token
+                ? { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: token }
+                : undefined
             const { stdout } = await execFileAsync(
                 opPath,
-                ["inject", "--in-file", file],
+                [
+                    "inject",
+                    ...(account ? ["--account", account] : []),
+                    "--in-file",
+                    file,
+                ],
                 {
                     signal,
                     encoding: "utf8",
                     maxBuffer: 64 * 1024 * 1024,
+                    ...(env !== undefined ? { env } : {}),
                 },
             )
             return parseOutput(stdout, refs, uuid)

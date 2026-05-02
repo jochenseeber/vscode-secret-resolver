@@ -144,4 +144,18 @@ suite("buildOpRunArgs", () => {
             ],
         )
     })
+
+    test("inserts --account before --env-file when account is provided", () => {
+        assert.deepStrictEqual(
+            buildOpRunArgs("op", "/tmp/sr/env", ["node", "app.js"], "my-account"),
+            ["op", "run", "--account", "my-account", "--env-file=/tmp/sr/env", "--", "node", "app.js"],
+        )
+    })
+
+    test("omits --account when account is undefined", () => {
+        assert.deepStrictEqual(
+            buildOpRunArgs("op", "/tmp/sr/env", ["node", "app.js"], undefined),
+            ["op", "run", "--env-file=/tmp/sr/env", "--", "node", "app.js"],
+        )
+    })
 })

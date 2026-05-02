@@ -1,65 +1,75 @@
 {
-    "enabledPlugins": {
-        "claude-code-setup@claude-plugins-official": true,
-        "claude-md-management@claude-plugins-official": true,
-        "code-simplifier@claude-plugins-official": true,
-        "context7@claude-plugins-official": true,
-        "ralph-loop@claude-plugins-official": true,
-        "serena@claude-plugins-official": true,
-        "superpowers@claude-plugins-official": true
+  "permissions": {
+    "allow": [
+      "mcp__plugin_serena_serena__activate_project",
+      "mcp__plugin_serena_serena__check_onboarding_performed",
+      "mcp__plugin_serena_serena__initial_instructions",
+      "mcp__plugin_serena_serena__list_dir",
+      "mcp__plugin_serena_serena__onboarding",
+      "mcp__plugin_serena_serena__write_memory",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  },
+  "enabledPlugins": {
+    "claude-code-setup@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "ralph-loop@claude-plugins-official": true,
+    "serena@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true,
+    "nx@nx-claude-plugins": true
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": [
+        "api.github.com",
+        "codeload.github.com",
+        "github.com",
+        "objects.githubusercontent.com",
+        "plugins.dprint.dev",
+        "raw.githubusercontent.com",
+        "registry.npmjs.org",
+        "uploads.github.com"
+      ]
     },
-    "permissions": {
-        "allow": [
-            "mcp__plugin_serena_serena__activate_project",
-            "mcp__plugin_serena_serena__check_onboarding_performed",
-            "mcp__plugin_serena_serena__initial_instructions",
-            "mcp__plugin_serena_serena__list_dir",
-            "mcp__plugin_serena_serena__onboarding",
-            "mcp__plugin_serena_serena__write_memory"
-        ]
-    },
-    "sandbox": {
-        "allowUnsandboxedCommands": false,
-        "enabled": true,
-        "failIfUnavailable": true,
-        "filesystem": {
-            "allowRead": [
-                ".",
-                "~/.claude",
-                "~/.config/gh",
-                "~/.config/git",
-                "~/.config/vsrun",
-                "~/.gitconfig",
-                "~/.gitignore_global",
-                "~/.local/bin",
-                "~/.npmrc",
-                "~/.rbenv",
-                "~/.vscode/argv.json",
-                "~/CLAUDE.md",
-                "~/Library/Caches/dprint",
-                "~/Library/Caches/pnpm",
-                "~/Library/pnpm/store"
-            ],
-            "allowWrite": [
-                "~/Library/Caches/dprint",
-                "~/Library/Caches/pnpm",
-                "~/Library/pnpm"
-            ],
-            "denyRead": [
-                "~/"
-            ]
-        },
-        "network": {
-            "allowedDomains": [
-                "api.github.com",
-                "codeload.github.com",
-                "github.com",
-                "objects.githubusercontent.com",
-                "plugins.dprint.dev",
-                "raw.githubusercontent.com",
-                "registry.npmjs.org",
-                "uploads.github.com"
-            ]
-        }
+    "filesystem": {
+      "allowWrite": [
+        "~/Library/Caches/dprint",
+        "~/Library/Caches/pnpm",
+        "~/Library/pnpm"
+      ],
+      "denyRead": [
+        "~/"
+      ],
+      "allowRead": [
+        ".",
+        "~/.claude",
+        "~/.config/gh",
+        "~/.config/git",
+        "~/.config/vsrun",
+        "~/.gitconfig",
+        "~/.gitignore_global",
+        "~/.local/bin",
+        "~/.npmrc",
+        "~/.rbenv",
+        "~/.vscode/argv.json",
+        "~/CLAUDE.md",
+        "~/Library/Caches/dprint",
+        "~/Library/Caches/pnpm",
+        "~/Library/pnpm/store"
+      ]
     }
+  },
+  "extraKnownMarketplaces": {
+    "nx-claude-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "nrwl/nx-ai-agents-config"
+      }
+    }
+  }
 }

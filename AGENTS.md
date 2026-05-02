@@ -9,9 +9,7 @@
 
 This is a VS Code extension (`vscode-secret-resolver`) that resolves 1Password
 `op://` secret references in debug-launch environment variables. The per-launch
-knob `SECRET_RESOLVER_MODE` selects between two paths. The default is
-console-aware: `"cache"` for `console: "internalConsole"`, `"op"` for every
-other console (including unset).
+knob `SECRET_RESOLVER_MODE` selects between two paths. The default is `"cache"`.
 
 - `SECRET_RESOLVER_MODE="op"` — resolver leaves `op://` refs in `config.env`.
   For terminal consoles the tracker writes the env to a temp dotenv file under
@@ -40,11 +38,17 @@ activation by checking the dir's `.pid` file against live PIDs.
   `parseSignalOnStop` (returns `SignalStep[] | null`, where `SignalStep` is
   `{ delaySec: number; signal: SignalName }` and `SignalName` is
   `"TERM" | "KILL" | "INT" | "HUP"`; `null` means off),
-  `DEFAULT_STEP_DELAY_SECONDS` (30), `mergeEnv`.
+  `DEFAULT_STEP_DELAY_SECONDS` (30), `mergeEnv`, `TOKEN_TAG_VAR`
+  (`"SECRET_RESOLVER_TOKEN_TAG"` — automatically stripped by
+  `stripInternalEnvVars` alongside other `SECRET_RESOLVER_*` keys),
+  `ACCOUNT_ID_VAR` (`"SECRET_RESOLVER_ACCOUNT_ID"` — automatically stripped),
+  `ACCOUNT_EMAIL_VAR` (`"SECRET_RESOLVER_ACCOUNT_EMAIL"` — automatically
+  stripped), `ACCOUNT_GIT_CONFIG_VAR` (`"SECRET_RESOLVER_ACCOUNT_GIT_CONFIG"` —
+  automatically stripped).
 - `src/launchRewrite.ts` — Pure helpers: `isRunInTerminalRequest` (DAP type
   guard) and
-  `buildOpRunArgs(opPath, envFilePath, args) →
-  [opPath, "run", "--env-file=" + envFilePath, "--", ...args]`.
+  `buildOpRunArgs(opPath, envFilePath, args, account?) →
+  [opPath, "run", ..."--account" + account if set, "--env-file=" + envFilePath, "--", ...args]`.
 - `src/dotenv.ts` — Minimal dotenv parser used for `envFile` resolution. Throws
   `EnvFileNotFoundError` for ENOENT so callers can warn and continue. Also
   exports `formatDotenv(env)` — writer used by the tracker to produce files
@@ -56,25 +60,97 @@ activation by checking the dir's `.pid` file against live PIDs.
   with per-entry IV. `clear()` zeroes the key buffer in place and rotates.
   Obfuscation, not real encryption — the goal is to defeat heap dumps and
   accidental log disclosure.
+- `src/accountResolver.ts` — Pure async helper; no `vscode` import.
+  `GitEmailStore` interface (`get/set/clear`) — injected by
+  `configProvider.ts`, backed by `workspaceState`.
+  `resolveAccountForEmail(email, opPath, cache, signal?)` — resolves a
+  1Password `account_uuid` from a plain email address. Caches result in
+  `SecretCache` under `__account__:<lowercase-email>`.
+  `resolveAccountForGitConfig(subdir, opPath, cache, signal?, workspacePath?,
+  gitEmailStore?)`
+  — resolves account UUID by reading `user.email` from
+  `git -C <workspacePath/subdir/.git> config --get user.email`, then looking up
+  the matching account. `subdir` must be relative; `.` means workspace root.
+  Two-layer cache: layer 1 is `gitEmailStore` (`.git`-dir path → email); layer
+  2 is `SecretCache` (`__account__:<lowercase-email>` → uuid). Error classes:
+  `AccountNotFoundError` (no matching account), `GitEmailNotFoundError` (git
+  not installed or no user.email configured).
+- `src/tokenResolver.ts` — Pure async helper; no `vscode` import.
+  `resolveTokenForTag(tag, opPath, cache, signal?, account?)` — resolves the
+  service account token for `tag` via two `op` CLI calls (both include
+  `--account <account>` when set):
+  1. `op item list --tags <tag> --categories "API Credential" --format json`
+  2. `op item get <id> --vault <vaultId> --fields label=credential --format json`
+     Caches the result in `SecretCache` under synthetic key `__token__:<tag>`.
+     Error classes: `TokenNotFoundError` (empty item list),
+     `TokenCredentialMissingError` (missing `credential` field). ENOENT and
+     non-zero exit are normalized to the same `OpCliNotFoundError` /
+     `OpInjectError` classes from `opInject.ts`.
 - `src/opInject.ts` — `OpInjectRunner` interface + `DefaultOpInjectRunner`.
   Spawns `<opPath> inject` via `child_process.spawn`, feeds a sentinel-wrapped
   (`__SR_<uuid>_BEGIN_<n>__` / `__SR_<uuid>_END_<n>__`) template on stdin,
   parses stdout. Distinct error classes: `OpCliNotFoundError`, `OpInjectError`,
-  `OpInjectAbortedError`.
+  `OpInjectAbortedError`. `resolve()` accepts an optional `token?: string` (4th
+  arg) and `account?: string` (5th arg); `token` is passed as
+  `OP_SERVICE_ACCOUNT_TOKEN=<token>` in the child env; `account` is passed as
+  `--account <account>` in the CLI args.
 - `src/resolveLaunchConfig.ts` — Pure async resolver. Type-only `vscode` import
   (so unit tests can run without the extension host). Implements the decision
   tree: skip non-map env shapes, parse envFile, merge file+inline with inline
-  winning, read `SECRET_RESOLVER_MODE` (console-aware default: `"cache"` for
-  `internalConsole`, `"op"` otherwise), strip every `SECRET_RESOLVER_*` key,
+  winning, read `SECRET_RESOLVER_MODE` (default: `"cache"`), strip every `SECRET_RESOLVER_*` key,
   branch to op-run/cache path, replace `config.env`, delete `config.envFile`.
-  When `SECRET_RESOLVER_SIGNAL_ON_STOP` is set on a terminal launch, parse it
-  into a `SignalStep[]` and attach `{ steps }` to the returned config under
+  When `SECRET_RESOLVER_TOKEN_TAG` is present, calls `deps.resolveTokenForTag`
+  (injectable; wired via `configProvider.ts`) to resolve the service account
+  token, then passes it as the 4th arg to `runner.resolve` for cache-mode.
+  Account resolution priority: `ACCOUNT_ID_VAR` > `ACCOUNT_EMAIL_VAR` (plain
+  email address, calls `deps.resolveAccountForEmail`) >
+  `ACCOUNT_GIT_CONFIG_VAR` (relative git subdir, `.` = workspace root, empty =
+  off, calls `deps.resolveAccountForGitConfig`). When
+  `SECRET_RESOLVER_SIGNAL_ON_STOP` is set on a terminal launch,
+  `SECRET_RESOLVER_TOKEN_TAG` is set on an op-mode terminal launch, or
+  `accountId` is non-null on any terminal launch, attaches
+  `{ steps, tokenTag?, accountId? }` to the returned config under
   `SECRET_RESOLVER_CONFIG_FIELD` (`"__secretResolver"`) for the tracker to
-  read.
+  read. `SecretResolverSessionConfig` is
+  `{ steps: SignalStep[]; tokenTag?: string; accountId?: string }`. `accountId`
+  is forwarded as the 4th arg to `deps.resolveTokenForTag` and the 5th arg to
+  `runner.resolve`.
 - `src/configProvider.ts` — `SecretDebugConfigurationProvider` — `vscode`-aware
   wrapper that bridges `CancellationToken` → `AbortSignal`, reads
   `secretResolver.opPath` from configuration, and routes user messages through
-  `vscode.window`. Calls into `resolveLaunchConfig`.
+  `vscode.window`. Calls into `resolveLaunchConfig`. Owns
+  `WorkspaceStateGitEmailStore` (implements `GitEmailStore` via
+  `context.workspaceState`, key `"secretResolver.gitEmails"`). Exports
+  `createDefaultProvider(cache, gitEmailStore)` and `createGitEmailStore(ws)`.
+- `src/debugAdapterProxy.ts` — Per-session tracker. On every `runInTerminal`
+  request whose env has at least one non-null entry, the tracker writes the env
+  to a `0600` dotenv file inside a `0700` `mkdtemp` dir under `os.tmpdir()`,
+  drops a `.pid` file alongside (used by the activation sweep), and rewrites
+  `arguments.args` via `buildOpRunArgs`. The env source is
+  `toStringEnv(message.arguments.env)`. When the session config carries a
+  `tokenTag` (set by the resolver for op-mode terminal launches), the tracker
+  also writes a `token.env` file (same dir, `0600`) containing
+  `OP_SERVICE_ACCOUNT_TOKEN=<token>` and composes a double `op run` wrap:
+  `op run --account <id> --env-file=token.env -- op run --account <id> --env-file=env -- <orig args>`
+  (both wraps include `--account` when `accountId` is set). Without `tokenTag`
+  the wrap is the standard single `op run`. When `accountId` is set,
+  `--account <id>` is added to every `op run` invocation (both outer and inner
+  in the double-wrap). `arguments.env` is always cleared to `{}`. Cleanup runs
+  on `onWillStopSession` and `onExit`. Defines the `TempDirRegistry` interface
+  the factory accepts; the extension owns the implementation. When
+  `__secretResolver` is present, the tracker also captures the spawned PID from
+  the `runInTerminal` response (`shellProcessId` preferred since the shell is
+  the process-group leader; falls back to `processId`), tracks DAP `exited`
+  events, and on the DAP `disconnect` request — when
+  `terminateDebuggee !== false` — iterates the `SignalStep[]` sequence: each
+  step waits `delaySec` seconds then signals the direct children of the
+  `op run` wrapper via `kill(pid, sig)`. Only one timer is active at a time;
+  `cancelPendingKill` cancels it when the program exits naturally (DAP `exited`
+  event) or on extension shutdown (`onExit`). Session stop
+  (`onWillStopSession`) does NOT cancel, allowing the sequence to continue
+  across session teardown. Detach (`terminateDebuggee: false`) is a no-op. The
+  factory accepts an injectable `KillFn`, timer hooks, and a
+  `getServiceAccountToken` callback so unit tests can stub all side effects.
 - `src/processTree.ts` — Process-tree helpers for signal-on-stop. `ProcessInfo`
   (`pid`, `ppid`, `command`), `GetProcessTreeFn` interface,
   `defaultGetProcessTree` (uses `pidtree` with `{ root: true, advanced: true }`
@@ -83,38 +159,21 @@ activation by checking the dir's `.pid` file against live PIDs.
   `op run` invocation by basename of argv0 + argv1). Consumed by
   `debugAdapterProxy.ts` to locate the `op run` wrapper in the process tree and
   identify its direct children.
-- `src/debugAdapterProxy.ts` — Per-session tracker. On every `runInTerminal`
-  request whose env has at least one non-null entry, the tracker writes the env
-  to a `0600` dotenv file inside a `0700` `mkdtemp` dir under `os.tmpdir()`,
-  drops a `.pid` file alongside (used by the activation sweep), rewrites
-  `arguments.args` via `buildOpRunArgs`, and clears `arguments.env`. Cleanup
-  runs on `onWillStopSession` and `onExit`. Defines the `TempDirRegistry`
-  interface the factory accepts; the extension owns the implementation. When
-  the session config carries `__secretResolver`, the tracker also captures the
-  spawned PID from the `runInTerminal` response (`shellProcessId` preferred
-  since the shell is the process-group leader; falls back to `processId` when
-  the shell PID is absent), tracks DAP `exited` events, and on the DAP
-  `disconnect` request — when `terminateDebuggee !== false` — iterates the
-  `SignalStep[]` sequence: each step waits `delaySec` seconds then signals the
-  direct children of the `op run` wrapper via `kill(pid, sig)`. Only one timer
-  is active at a time; `cancelPendingKill` cancels it when the program exits
-  naturally (DAP `exited` event) or on extension shutdown (`onExit`). Session
-  stop (`onWillStopSession`) does NOT cancel, allowing the sequence to continue
-  across session teardown. Detach (`terminateDebuggee: false`) is a no-op. The
-  factory accepts an injectable `KillFn` plus timer hooks so unit tests can
-  stub `process.kill` and `setTimeout`.
 - `src/tempDirRegistry.ts` — `InMemoryTempDirRegistry`, `cleanupRegistry`
   (synchronous, safe from `process.on('exit'|signals)`), and
   `sweepStaleTempDirs` (activation-time scan of `os.tmpdir()` for
   `secret-resolver-*` dirs with dead `.pid` owners).
-- `src/extension.ts` — Constructs a shared `SecretCache` and a shared
-  `InMemoryTempDirRegistry`. Runs the activation-time stale-dir sweep, installs
+- `src/extension.ts` — Constructs a shared `SecretCache`, a shared
+  `InMemoryTempDirRegistry`, and a `GitEmailStore` (via `createGitEmailStore`).
+  Clears the `GitEmailStore` on activate (stale entries), deactivate, the
+  `secretResolver.clearCache` command, and `secretResolver.opPath` changes.
+  Runs the activation-time stale-dir sweep, installs
   `process.on('exit'|'SIGTERM'|'SIGINT'|'SIGHUP')` handlers that drain the
   registry, registers the configuration provider for `*`, the tracker factory
   (with the registry) for `*`, the `secretResolver.clearCache` command, and a
   `onDidChangeConfiguration` listener that clears the cache when
-  `secretResolver.opPath` changes. `deactivate()` zeroes the session key and
-  drains the registry.
+  `secretResolver.opPath` changes. `deactivate()` zeroes the session key,
+  clears the git email store, and drains the registry.
 
 ## Settings
 
@@ -129,9 +188,8 @@ activation by checking the dir's `.pid` file against live PIDs.
 
 ## Per-launch env vars
 
-The extension reads two kinds of marker env vars from the merged
-`env`/`envFile` map and strips every `SECRET_RESOLVER_*` key before the adapter
-sees them:
+The extension reads these marker env vars from the merged `env`/`envFile` map
+and strips every `SECRET_RESOLVER_*` key before the adapter sees them:
 
 - `SECRET_RESOLVER_MODE` — controls the resolution path. Values are
   case-insensitive after trimming.
@@ -144,10 +202,17 @@ sees them:
     plaintext, caching the resolved values for the session. Tracker still wraps
     terminal-mode launches in `op run --env-file` (the file holds plaintext,
     `op run` becomes a pass-through env loader).
-  - Unset / empty: console-aware default — `"cache"` for
-    `console: "internalConsole"`, `"op"` for every other console.
-  - Unknown non-empty values emit a `console.warn` and fall through to the same
-    console-aware default.
+  - Unset / empty: defaults to `"cache"`.
+  - Unknown non-empty values emit a `console.warn` and fall through to `"cache"`.
+- `SECRET_RESOLVER_TOKEN_TAG` — tag identifying the "API Credential" vault item
+  whose `credential` field is used as `OP_SERVICE_ACCOUNT_TOKEN` for this
+  launch. Resolved once per session per tag and cached. The token is passed to
+  `op` via environment variable, never via command-line arguments. Cleared by
+  `Secret Resolver: Clear Cache`. For op-mode terminal launches the tracker
+  writes the token to a `token.env` file (same `0600`/`0700` temp dir as `env`)
+  and composes a double `op run` wrap; for cache-mode / `internalConsole` it is
+  passed to `op inject` in-process. The `tokenTag` string is attached to
+  `__secretResolver` only for op-mode terminal launches.
 - `SECRET_RESOLVER_SIGNAL_ON_STOP` — a `+`-separated sequence of signal steps.
   Each step: optional `N:` delay prefix (seconds; default 0 for the first step,
   30 for subsequent steps), then a signal name (`TERM`, `KILL`, `INT`, `HUP`;
@@ -158,6 +223,27 @@ sees them:
   `disconnect` request when `terminateDebuggee !== false`. Detach is a no-op.
   Ignored for `internalConsole`. Unknown / unparsable values warn and produce
   no signaling.
+- `SECRET_RESOLVER_ACCOUNT_ID` — 1Password account shorthand or UUID. When set,
+  passed as `--account <id>` to every `op` command the extension invokes for
+  this launch (item lookup, `op inject`, and `op run`). Useful in multi-account
+  setups. Attached to `__secretResolver` for terminal launches so the tracker
+  can add `--account` to `op run` args. Not included for `internalConsole` (the
+  account is forwarded directly to `runner.resolve` in-process).
+- `SECRET_RESOLVER_ACCOUNT_EMAIL` — resolves the 1Password account from a plain
+  email address (e.g. `user@example.com`). Runs
+  `op account list --format json`, finds the matching account by email
+  (case-insensitive), and uses `account_uuid` as the `--account` value — same
+  effect as `SECRET_RESOLVER_ACCOUNT_ID` once resolved. Ignored when
+  `SECRET_RESOLVER_ACCOUNT_ID` is also set. Email → UUID cached in
+  `SecretCache`.
+- `SECRET_RESOLVER_ACCOUNT_GIT_CONFIG` — resolves the 1Password account by
+  reading `user.email` from git config at `<workspacePath>/<subdir>/.git`.
+  Value is a relative subdir (`.` = workspace root, empty = off). Runs
+  `git -C <workspacePath/subdir/.git> config --get user.email`, then looks up
+  the account as above. Ignored when `SECRET_RESOLVER_ACCOUNT_ID` or
+  `SECRET_RESOLVER_ACCOUNT_EMAIL` is also set (lower priority). `.git`-dir →
+  email mapping cached in `workspaceState`; email → UUID cached in
+  `SecretCache`. Absolute subdir values abort the launch with an error.
 
 ## Non-goals (v1)
 
@@ -173,7 +259,7 @@ sees them:
 ## Build and Test
 
 Use the commands documented in `README.md`. For substantial changes, prefer
-`pnpm run verify` before concluding work.
+`nx run stage:check` before concluding work.
 
 Assume Node.js 20+ and pnpm 10.33.0/Corepack are the baseline local tools.
 Treat `op`, `git`, `gh`, and `xvfb-run` as workflow-specific rather than
@@ -186,15 +272,32 @@ yet released a fix, prefer a minimal root `package.json` `pnpm.overrides` entry
 and refresh `pnpm-lock.yaml` rather than adding a direct dependency that does
 not control the vulnerable subtree.
 
-Unit tests live in `test/unit/` and cover: `envHelpers`, `dotenv`,
-`launchRewrite`, `secretCache`, `opInject`, `processTree`, and
-`resolveLaunchConfig`. The `resolveLaunchConfig` tests live in
-`resolveLaunchConfig.test.ts`; `configProvider.ts` itself has no unit test. The
-`resolveLaunchConfig` suite injects a fake `OpInjectRunner` and a fake
-`parseEnvFile` to exercise every branch of the decision tree without touching
-the real 1Password CLI or filesystem. Integration tests live in
-`test/integration/`; the `.vscode-test.mjs` config pins the VS Code version to
-match `engines.vscode` in `package.json`.
+The build tool is Vite, orchestrated by Nx via the `build:src` target (the
+`build` target is a noop wrapper over it). `build:src` has two configurations:
+`production` (default — `vite build`, minified, used for packaging) and
+`development` (`vite build --mode development`, not minified, used for the F5
+loop and testing). Both configurations emit sourcemaps.
+`nx run build:src --configuration=development` produces the dev build;
+`nx run build:src` (or `nx run build`) produces the release build. Vite bundles
+`src/extension.ts` into `dist/extension.js` (CJS, Node 20 target). Runtime
+dependencies (`pidtree`, `@vscode/debugprotocol`) are bundled; `vscode` and
+Node built-ins are external (Node built-ins are enumerated via `builtinModules`
+from `node:module`). Config lives in `vite.config.ts`.
+
+Unit tests live in `spec/` and are run with Vitest (`nx run test:unit` →
+`vitest run spec`). Vitest is configured in `vite.config.ts`
+(`test.include: ["spec/**/*.test.ts"]`, `globals: true`); it compiles
+TypeScript in-memory via esbuild so no separate build step is needed. The tests
+cover the pure modules: `envHelpers`, `dotenv`, `launchRewrite`, `secretCache`,
+`opInject`, `resolveLaunchConfig`, `accountResolver`, and `tokenResolver`. Each
+test injects fakes for all I/O (OpInjectRunner, filesystem, git, op CLI) so no
+real 1Password CLI or filesystem access is required. Integration tests live in
+`test/` and require a `tsc` compilation step to produce JS files in
+`dist/test/test/` (the path `.vscode-test.mjs` looks for). Type-checking for
+all source trees (`src/`, `spec/`, `test/`) is handled by the single
+`tsconfig.json` via `nx run check:types` → `tsc --noEmit`.
+`nx run test:integration` and `nx run test` default to the `development`
+configuration so they use a non-minified build.
 
 To test manually: press F5 in VS Code to launch the Extension Development Host,
 then start a debug session from `examples/.vscode/launch.json`. The preset
@@ -227,20 +330,34 @@ the temp dir under `os.tmpdir()` should be gone.
 
 ## Release Flow
 
-`scripts/release.ts` handles version bumping with a release-branch model:
+`scripts/release.ts` handles version bumping with a release-branch model
+(`nx run release:commit`):
 
-- On `main` with a `*-dev` version: auto-detects `major` vs `minor` from
-  conventional-commit breaking markers since the last "Start X.Y.0 dev" commit.
-  Creates branch `v<major>.<minor>-dev`, commits the release version there,
-  creates the release tag, bumps the release branch to the next patch `*-dev`,
-  then bumps `main` to the next `*-dev`.
+- On `main` with a `*-dev` version: derives the release version directly from
+  `package.json` (stripping the `-dev` suffix) and infers the bump label by
+  comparing against the highest-versioned release branch (`vX.Y-dev`) and tag
+  (`vX.Y.Z`) in the repository. The label is purely informational and does not
+  change the resulting version. To release a major bump, set `package.json` to
+  `X.0.0-dev` before running release; to release a minor bump, leave it at
+  `X.Y.0-dev`. Errors if `package.json` is not strictly ahead of the latest
+  release ref. Creates branch `v<major>.<minor>-dev`, commits the release
+  version there, creates the release tag, bumps the release branch to the next
+  patch `*-dev`, then bumps `main` to the next minor `*-dev`.
 - On a release branch with a `*-dev` version: commits the release version,
   creates the release tag, then bumps the branch to the next patch `*-dev`.
 - At the release-commit step, `conventional-changelog` regenerates
   `CHANGELOG.md` (conventionalcommits preset) and the updated file is folded
-  into the same commit as the version bump. Commit messages must follow the
+  into the same commit as the version bump. When releasing from `main`, the
+  regenerated `CHANGELOG.md` is also copied from the release branch onto `main`
+  (via `git checkout <release-branch> -- CHANGELOG.md`) and committed alongside
+  the next-dev version bump. Commit messages must follow the
   [Conventional Commits spec](https://www.conventionalcommits.org/en/v1.0.0/)
   for entries to appear.
+- All commits authored by `scripts/release.ts` use Conventional Commits format:
+  `chore: release X.Y.Z` for releases and `chore: start X.Y.Z-dev development`
+  for next-dev bumps. The bump-detection regex in `release.ts` matches both the
+  Conventional form and the legacy `Start X.Y.Z-dev development` form for
+  backward compatibility.
 
 Tags of the form `vX.Y.Z` (or `vX.Y.Z-rc.N` for pre-releases) trigger
 `.github/workflows/ship.yml`, which packages the `.vsix`, publishes to VS Code

@@ -171,4 +171,38 @@ suite("DefaultOpInjectRunner", () => {
             await fake.cleanup()
         }
     })
+
+    test("passes --account to op inject when account is set", async () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const argLogFile = path.join(os.tmpdir(), `sr-inject-arg-log-${Date.now()}.txt`)
+
+        try {
+            const fake = await makeFakeOp("ok", argLogFile)
+
+            try {
+                const runner = new DefaultOpInjectRunner()
+                await runner.resolve(
+                    ["op://Vault/Item/a"],
+                    fake.path,
+                    undefined,
+                    undefined,
+                    "SOME_ACCOUNT_ID",
+                )
+                const log = await fs.readFile(argLogFile, "utf8")
+                assert.ok(
+                    log.includes("--account SOME_ACCOUNT_ID"),
+                    `expected --account SOME_ACCOUNT_ID in args: ${log}`,
+                )
+            }
+            finally {
+                await fake.cleanup()
+            }
+        }
+        finally {
+            await fs.rm(argLogFile, { force: true })
+        }
+    })
 })

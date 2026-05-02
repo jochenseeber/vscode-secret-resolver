@@ -138,64 +138,64 @@ suite("stripInternalEnvVars", () => {
         stripInternalEnvVars(env)
         assert.deepStrictEqual(env, snapshot)
     })
+
+    test("strips SECRET_RESOLVER_TOKEN_TAG", () => {
+        const env = { SECRET_RESOLVER_TOKEN_TAG: "my-tag", KEEP: "y" }
+        assert.deepStrictEqual(stripInternalEnvVars(env), { KEEP: "y" })
+    })
+
+    test("strips SECRET_RESOLVER_ACCOUNT_ID", () => {
+        const env = { SECRET_RESOLVER_ACCOUNT_ID: "SOME_ACCOUNT_ID", KEEP: "y" }
+        assert.deepStrictEqual(stripInternalEnvVars(env), { KEEP: "y" })
+    })
+
+    test("strips SECRET_RESOLVER_ACCOUNT_EMAIL", () => {
+        const env = { SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com", KEEP: "y" }
+        assert.deepStrictEqual(stripInternalEnvVars(env), { KEEP: "y" })
+    })
+
+    test("strips SECRET_RESOLVER_ACCOUNT_GIT_CONFIG", () => {
+        const env = { SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: ".", KEEP: "y" }
+        assert.deepStrictEqual(stripInternalEnvVars(env), { KEEP: "y" })
+    })
 })
 
 suite("parseSecretResolverMode", () => {
-    test("returns 'cache' for the literal 'cache' regardless of console", () => {
-        for (const consoleKind of ["", "integratedTerminal", "internalConsole"]) {
-            assert.strictEqual(
-                parseSecretResolverMode("cache", consoleKind),
-                "cache",
-            )
-        }
+    test("returns 'cache' for the literal 'cache'", () => {
+        assert.strictEqual(parseSecretResolverMode("cache"), "cache")
     })
 
     test("'cache' is case-insensitive and trims surrounding whitespace", () => {
         for (const v of ["CACHE", " Cache ", "  cache\t"]) {
             assert.strictEqual(
-                parseSecretResolverMode(v, "integratedTerminal"),
+                parseSecretResolverMode(v),
                 "cache",
                 `expected "${v}" to parse as "cache"`,
             )
         }
     })
 
-    test("returns 'op' for the literal 'op' regardless of console", () => {
-        for (const consoleKind of ["", "integratedTerminal", "internalConsole"]) {
+    test("returns 'op' for the literal 'op'", () => {
+        assert.strictEqual(parseSecretResolverMode("op"), "op")
+    })
+
+    test("'op' is case-insensitive and trims surrounding whitespace", () => {
+        for (const v of ["OP", " Op ", "  op\t"]) {
             assert.strictEqual(
-                parseSecretResolverMode("op", consoleKind),
+                parseSecretResolverMode(v),
                 "op",
+                `expected "${v}" to parse as "op"`,
             )
         }
     })
 
-    test("missing values default to 'cache' for internalConsole", () => {
-        assert.strictEqual(
-            parseSecretResolverMode(undefined, "internalConsole"),
-            "cache",
-        )
-        assert.strictEqual(
-            parseSecretResolverMode(null, "internalConsole"),
-            "cache",
-        )
-        assert.strictEqual(
-            parseSecretResolverMode("", "internalConsole"),
-            "cache",
-        )
-    })
-
-    test("missing values default to 'op' for non-internalConsole consoles", () => {
-        for (const consoleKind of ["", "integratedTerminal", "externalTerminal"]) {
-            assert.strictEqual(
-                parseSecretResolverMode(undefined, consoleKind),
-                "op",
-            )
-            assert.strictEqual(parseSecretResolverMode(null, consoleKind), "op")
-            assert.strictEqual(parseSecretResolverMode("", consoleKind), "op")
+    test("missing / empty / unknown values all default to 'cache'", () => {
+        for (const v of [undefined, null, ""] as const) {
+            assert.strictEqual(parseSecretResolverMode(v), "cache")
         }
     })
 
-    test("unknown values warn and fall through to the console-derived default", () => {
+    test("unknown non-empty values warn and default to 'cache'", () => {
         const original = console.warn
         const warnings: unknown[][] = []
 
@@ -204,18 +204,9 @@ suite("parseSecretResolverMode", () => {
         }
 
         try {
-            assert.strictEqual(
-                parseSecretResolverMode("foo", "integratedTerminal"),
-                "op",
-            )
-            assert.strictEqual(
-                parseSecretResolverMode("1", "internalConsole"),
-                "cache",
-            )
-            assert.strictEqual(
-                parseSecretResolverMode("true", "externalTerminal"),
-                "op",
-            )
+            assert.strictEqual(parseSecretResolverMode("foo"), "cache")
+            assert.strictEqual(parseSecretResolverMode("1"), "cache")
+            assert.strictEqual(parseSecretResolverMode("true"), "cache")
         }
         finally {
             console.warn = original

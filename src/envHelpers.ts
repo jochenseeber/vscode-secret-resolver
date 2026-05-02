@@ -7,6 +7,14 @@ export const OP_REF_PATTERN = /^op:\/\//
 
 const INTERNAL_VAR_PATTERN = /^SECRET_RESOLVER_/
 
+export const TOKEN_TAG_VAR = "SECRET_RESOLVER_TOKEN_TAG"
+
+export const ACCOUNT_ID_VAR = "SECRET_RESOLVER_ACCOUNT_ID"
+
+export const ACCOUNT_EMAIL_VAR = "SECRET_RESOLVER_ACCOUNT_EMAIL"
+
+export const ACCOUNT_GIT_CONFIG_VAR = "SECRET_RESOLVER_ACCOUNT_GIT_CONFIG"
+
 export type SecretResolverMode = "op" | "cache"
 
 export type EnvMap = Record<string, string | null | undefined>
@@ -94,16 +102,13 @@ export function stripInternalEnvVars(env: EnvMap): EnvMap {
 
 /**
  * Parses the per-launch `SECRET_RESOLVER_MODE` value into a
- * `SecretResolverMode`, taking the launch `console` into account for the
- * default. Explicit `"cache"` or `"op"` are honored regardless of console.
- * Missing / empty / unknown values default to `"cache"` for
- * `console === "internalConsole"` (where `op run` cannot be wrapped) and
- * `"op"` everywhere else. Unknown non-empty values produce a `console.warn`
- * so typos surface during development.
+ * `SecretResolverMode`. Explicit `"cache"` or `"op"` are honored regardless
+ * of console. Missing / empty / unknown values always default to `"cache"`.
+ * Unknown non-empty values produce a `console.warn` so typos surface during
+ * development.
  */
 export function parseSecretResolverMode(
     value: string | null | undefined,
-    consoleKind: string,
 ): SecretResolverMode {
     if (typeof value === "string") {
         const normalized = value.trim().toLowerCase()
@@ -118,14 +123,12 @@ export function parseSecretResolverMode(
 
         if (normalized !== "") {
             console.warn(
-                `[secret-resolver] unknown SECRET_RESOLVER_MODE value ${
-                    JSON.stringify(value)
-                }; using console-derived default`,
+                `[secret-resolver] unknown SECRET_RESOLVER_MODE value ${JSON.stringify(value)}; defaulting to "cache"`,
             )
         }
     }
 
-    return consoleKind === "internalConsole" ? "cache" : "op"
+    return "cache"
 }
 
 export const DEFAULT_STEP_DELAY_SECONDS = 30

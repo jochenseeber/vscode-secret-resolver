@@ -65,6 +65,7 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
         ) => NodeJS.Timeout,
         private readonly clearKillTimer: (handle: NodeJS.Timeout) => void,
         private readonly getProcessTree: GetProcessTreeFn,
+        private readonly getServiceAccountToken: (tag: string) => string | undefined,
     ) {}
 
     onDidSendMessage(message: unknown): void {
@@ -96,6 +97,8 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
             )
             createdDir = dir
 
+            const accountId = this.signalConfig?.accountId
+
             const envFilePath = path.join(dir, "env")
             fs.writeFileSync(envFilePath, formatDotenv(stringEnv), {
                 mode: 0o600,
@@ -107,11 +110,29 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
             this.dirs.push(dir)
             this.registry.add(dir)
 
-            message.arguments.args = buildOpRunArgs(
-                opPath,
-                envFilePath,
-                message.arguments.args,
-            )
+            const token = this.signalConfig?.tokenTag !== undefined
+                ? this.getServiceAccountToken(this.signalConfig.tokenTag)
+                : undefined
+
+            if (token !== undefined) {
+                const tokenEnvFilePath = path.join(dir, "token.env")
+                fs.writeFileSync(
+                    tokenEnvFilePath,
+                    formatDotenv({ OP_SERVICE_ACCOUNT_TOKEN: token }),
+                    { mode: 0o600 },
+                )
+                const innerArgs = buildOpRunArgs(opPath, envFilePath, message.arguments.args, accountId)
+                message.arguments.args = buildOpRunArgs(opPath, tokenEnvFilePath, innerArgs, accountId)
+            }
+            else {
+                message.arguments.args = buildOpRunArgs(
+                    opPath,
+                    envFilePath,
+                    message.arguments.args,
+                    accountId,
+                )
+            }
+
             message.arguments.env = {}
         }
         catch (err) {
@@ -147,7 +168,7 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
 
             if (typeof pid === "number" && pid > 0) {
                 this.pid = pid
-                showTimedNotification(`Launched process has PID ${pid}`)
+                void vscode.window.showInformationMessage(`Launched process has PID ${pid}`)
             }
 
             return
@@ -216,7 +237,7 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
         }
 
         if (tree.length === 0) {
-            showTimedNotification(`PID ${rootPid} has no children, nothing to signal.`)
+            void vscode.window.showWarningMessage(`PID ${rootPid} has no children, nothing to signal.`)
             return
         }
 
@@ -230,14 +251,14 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
         )
 
         if (opPids.size === 0) {
-            showTimedNotification(`PID ${rootPid} has no \`op\` child; nothing to ${signal}.`)
+            void vscode.window.showWarningMessage(`PID ${rootPid} has no \`op\` child; nothing to ${signal}.`)
             return
         }
 
         const targets = tree.filter((p) => opPids.has(p.ppid))
 
         if (targets.length === 0) {
-            showTimedNotification(
+            void vscode.window.showWarningMessage(
                 `\`op\` wrapper(s) (${[...opPids].join(", ")}) have no children; nothing to ${signal}.`,
             )
             return
@@ -245,7 +266,7 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
 
         for (const target of targets) {
             safeKill(this.kill, target.pid, signal)
-            showTimedNotification(`Sent ${signal} to PID ${target.pid}`)
+            void vscode.window.showInformationMessage(`Sent ${signal} to PID ${target.pid}`)
         }
     }
 
@@ -284,6 +305,7 @@ export class SecretDebugAdapterTrackerFactory implements vscode.DebugAdapterTrac
         ) => NodeJS.Timeout = setTimeout,
         private readonly clearKillTimer: (handle: NodeJS.Timeout) => void = clearTimeout,
         private readonly getProcessTree: GetProcessTreeFn = defaultGetProcessTree,
+        private readonly getServiceAccountToken: (tag: string) => string | undefined = () => undefined,
     ) {}
 
     createDebugAdapterTracker(
@@ -300,6 +322,7 @@ export class SecretDebugAdapterTrackerFactory implements vscode.DebugAdapterTrac
             this.setKillTimer,
             this.clearKillTimer,
             this.getProcessTree,
+            this.getServiceAccountToken,
         )
     }
 }
@@ -344,17 +367,28 @@ function extractSignalConfig(
         return undefined
     }
 
-    const candidate = raw as { steps?: unknown }
+    const candidate = raw as { steps?: unknown; tokenTag?: unknown; accountId?: unknown }
 
-    if (!Array.isArray(candidate.steps) || candidate.steps.length === 0) {
+    const hasSteps = Array.isArray(candidate.steps)
+        && candidate.steps.length > 0
+        && candidate.steps.every(isSignalStep)
+    const tokenTag = typeof candidate.tokenTag === "string" && candidate.tokenTag !== ""
+        ? candidate.tokenTag
+        : undefined
+    const accountId = typeof candidate.accountId === "string" && candidate.accountId !== ""
+        ? candidate.accountId
+        : undefined
+
+    if (!hasSteps && tokenTag === undefined && accountId === undefined) {
         return undefined
     }
 
-    if (!candidate.steps.every(isSignalStep)) {
-        return undefined
+    const steps = hasSteps ? (candidate.steps as SignalStep[]) : []
+    return {
+        steps,
+        ...(tokenTag !== undefined ? { tokenTag } : {}),
+        ...(accountId !== undefined ? { accountId } : {}),
     }
-
-    return { steps: candidate.steps }
 }
 
 function safeKill(kill: KillFn, pid: number, signal: NodeJS.Signals): void {
@@ -374,12 +408,6 @@ function safeKill(kill: KillFn, pid: number, signal: NodeJS.Signals): void {
     }
 }
 
-function showTimedNotification(message: string, timeoutMs = 10_000): void {
-    void vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: message, cancellable: false },
-        () => new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-    )
-}
 
 function isDapEvent(
     message: unknown,

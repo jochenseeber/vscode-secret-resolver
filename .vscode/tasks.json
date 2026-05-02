@@ -3,7 +3,7 @@
     "tasks": [
         {
             "type": "shell",
-            "command": "nx run build --no-tui",
+            "command": "nx run build --no-tui --no-interactive --configuration development",
             "problemMatcher": "$tsc",
             "label": "nx: compile",
             "group": {
@@ -14,9 +14,17 @@
         {
             "type": "shell",
             "command": "nx run watch",
-            "problemMatcher": "$tsc-watch",
             "label": "nx: watch",
-            "isBackground": true
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "nx-watch",
+                "pattern": { "regexp": "^$" },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": ".",
+                    "endsPattern": "built in"
+                }
+            }
         }
     ]
 }
