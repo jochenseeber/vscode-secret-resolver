@@ -1,11 +1,10 @@
 import * as assert from "node:assert"
+import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { OpCliNotFoundError, OpInjectError } from "../src/opInject"
+import { OpCliNotFoundError, OpInjectError, OpRunner } from "../src/opRunner"
 import { resolveTokenForTag, TokenCredentialMissingError, TokenNotFoundError } from "../src/tokenResolver"
-
-import { promises as fs } from "node:fs"
 import { SecretCache } from "../src/secretCache"
 
 /**
@@ -15,6 +14,7 @@ import { SecretCache } from "../src/secretCache"
  * Pass `"fail"` for either to make that command exit non-zero.
  * Pass `"slow"` for `listResult` to sleep (cancellation test).
  * When `argLogFile` is set, the fake appends `$@` to that file on each call.
+ * Handles an optional leading `--account <id>` global flag.
  */
 async function makeFakeOp(opts: {
     listResult: string | "fail" | "slow"
@@ -43,6 +43,8 @@ async function makeFakeOp(opts: {
     const body = [
         "#!/usr/bin/env bash",
         logLine,
+        "# Skip optional leading --account <id>",
+        "while [[ \"$1\" == \"--account\" ]]; do shift; shift; done",
         "subcmd=\"$1\"; shift",
         "if [[ \"$subcmd\" == \"item\" ]]; then",
         "  subcmd2=\"$1\"; shift",
@@ -69,10 +71,10 @@ suite("resolveTokenForTag", () => {
 
         try {
             const cache = new SecretCache()
-            const token = await resolveTokenForTag("my-tag", fake.path, cache)
+            const token = await resolveTokenForTag("my-tag", new OpRunner(fake.path), cache)
             assert.strictEqual(token, "token-value")
             // Second call must return from cache (no extra CLI spawns needed).
-            const token2 = await resolveTokenForTag("my-tag", fake.path, cache)
+            const token2 = await resolveTokenForTag("my-tag", new OpRunner(fake.path), cache)
             assert.strictEqual(token2, "token-value")
         }
         finally {
@@ -88,7 +90,7 @@ suite("resolveTokenForTag", () => {
         try {
             const cache = new SecretCache()
             await assert.rejects(
-                resolveTokenForTag("missing-tag", fake.path, cache),
+                resolveTokenForTag("missing-tag", new OpRunner(fake.path), cache),
                 (err) =>
                     err instanceof TokenNotFoundError
                     && (err as TokenNotFoundError).message.includes("missing-tag"),
@@ -109,7 +111,7 @@ suite("resolveTokenForTag", () => {
         try {
             const cache = new SecretCache()
             await assert.rejects(
-                resolveTokenForTag("my-tag", fake.path, cache),
+                resolveTokenForTag("my-tag", new OpRunner(fake.path), cache),
                 (err) => err instanceof TokenCredentialMissingError,
             )
         }
@@ -121,7 +123,7 @@ suite("resolveTokenForTag", () => {
     test("throws OpCliNotFoundError when binary does not exist", async () => {
         const cache = new SecretCache()
         await assert.rejects(
-            resolveTokenForTag("my-tag", "/no/such/op-binary", cache),
+            resolveTokenForTag("my-tag", new OpRunner("/no/such/op-binary"), cache),
             (err) => err instanceof OpCliNotFoundError,
         )
     })
@@ -134,7 +136,7 @@ suite("resolveTokenForTag", () => {
         try {
             const cache = new SecretCache()
             await assert.rejects(
-                resolveTokenForTag("my-tag", fake.path, cache),
+                resolveTokenForTag("my-tag", new OpRunner(fake.path), cache),
                 (err) => err instanceof OpInjectError,
             )
         }
@@ -152,14 +154,14 @@ suite("resolveTokenForTag", () => {
 
         try {
             const cache = new SecretCache()
-            await resolveTokenForTag("my-tag", fake.path, cache)
+            await resolveTokenForTag("my-tag", new OpRunner(fake.path), cache)
 
             // Replace op binary with something that always fails — if it were
             // called, the test would throw.
             const badFake = await makeFakeOp({ listResult: "fail" })
 
             try {
-                const token = await resolveTokenForTag("my-tag", badFake.path, cache)
+                const token = await resolveTokenForTag("my-tag", new OpRunner(badFake.path), cache)
                 assert.strictEqual(token, "cached-token")
             }
             finally {
@@ -179,7 +181,7 @@ suite("resolveTokenForTag", () => {
         try {
             const cache = new SecretCache()
             const controller = new AbortController()
-            const promise = resolveTokenForTag("my-tag", fake.path, cache, controller.signal)
+            const promise = resolveTokenForTag("my-tag", new OpRunner(fake.path), cache, controller.signal)
             setTimeout(() => controller.abort(), 50)
             await assert.rejects(promise)
         }
@@ -200,7 +202,7 @@ suite("resolveTokenForTag", () => {
 
             try {
                 const cache = new SecretCache()
-                await resolveTokenForTag("my-tag", fake.path, cache, undefined, "SOME_ACCOUNT_ID")
+                await resolveTokenForTag("my-tag", new OpRunner(fake.path), cache, undefined, "SOME_ACCOUNT_ID")
                 const log = await fs.readFile(argLogFile, "utf8")
                 const lines = log.trim().split("\n")
                 assert.ok(lines.length >= 2, "expected two log lines (list + get)")

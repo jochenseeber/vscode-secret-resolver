@@ -18,26 +18,3 @@ export function isRunInTerminalRequest(
         && Array.isArray(m.arguments?.args)
     return isMatch
 }
-
-/**
- * Returns the runInTerminal argv that wraps the launch in
- * `op run --env-file=<envFilePath> -- <orig args>`. The env file is
- * expected to live for at least the duration of the spawned `op run`
- * invocation; cleanup is the caller's responsibility.
- */
-export function buildOpRunArgs(
-    opPath: string,
-    envFilePath: string,
-    args: readonly string[],
-    account?: string,
-): string[] {
-    const result = [
-        opPath,
-        "run",
-        ...(account !== undefined ? ["--account", account] : []),
-        `--env-file=${envFilePath}`,
-        "--",
-        ...args,
-    ]
-    return result
-}

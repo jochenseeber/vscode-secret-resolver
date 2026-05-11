@@ -1,6 +1,6 @@
 import { getCachedToken as readCachedToken, setCachedToken } from "./resolverCache"
 
-import { OpCli } from "./opCli"
+import { OpRunner } from "./opRunner"
 import type { SecretCache } from "./secretCache"
 
 export class TokenNotFoundError extends Error {
@@ -28,7 +28,7 @@ export { getCachedToken } from "./resolverCache"
  */
 export async function resolveTokenForTag(
     tag: string,
-    opPath: string,
+    runner: OpRunner,
     cache: SecretCache,
     signal?: AbortSignal,
     account?: string,
@@ -39,89 +39,19 @@ export async function resolveTokenForTag(
         return cached
     }
 
-    const opCli = new OpCli(opPath)
-    const itemId = await findItemIdForTag(tag, opCli, signal, account)
-    const token = await getCredentialField(itemId.id, itemId.vaultId, opCli, signal, account)
+    const items = await runner.listItems(tag, { signal, account })
 
-    setCachedToken(cache, tag, token)
-    return token
-}
-
-async function findItemIdForTag(
-    tag: string,
-    opCli: OpCli,
-    signal: AbortSignal | undefined,
-    account: string | undefined,
-): Promise<{ id: string; vaultId: string }> {
-    const items = await opCli.execJson<Array<{ id?: string; vault?: { id?: string } }>>(
-        [
-            "item",
-            "list",
-            "--tags",
-            tag,
-            "--categories",
-            "API Credential",
-            "--format",
-            "json",
-        ],
-        {
-            signal,
-            account,
-            withoutServiceAccountToken: true,
-            parseErrorMessage: "op item list returned non-JSON output",
-        },
-    )
-
-    if (!Array.isArray(items) || items.length === 0) {
+    if (items.length === 0) {
         throw new TokenNotFoundError(tag)
     }
 
-    const item = items[0]
-    const id = item.id
-    const vaultId = item.vault?.id
+    const { id, vaultId } = items[0]
+    const credential = await runner.getItemCredential(id, vaultId, { signal, account })
 
-    if (typeof id !== "string" || typeof vaultId !== "string") {
-        throw new TokenNotFoundError(tag)
+    if (credential === "") {
+        throw new TokenCredentialMissingError(id)
     }
 
-    const itemRef = { id, vaultId }
-    return itemRef
-}
-
-async function getCredentialField(
-    itemId: string,
-    vaultId: string,
-    opCli: OpCli,
-    signal: AbortSignal | undefined,
-    account: string | undefined,
-): Promise<string> {
-    const parsed = await opCli.execJson<unknown>(
-        [
-            "item",
-            "get",
-            itemId,
-            "--vault",
-            vaultId,
-            "--fields",
-            "label=credential",
-            "--format",
-            "json",
-        ],
-        {
-            signal,
-            account,
-            withoutServiceAccountToken: true,
-            parseErrorMessage: "op item get returned non-JSON output",
-        },
-    )
-    // op item get --fields returns an array when --format json is used.
-    const fields = Array.isArray(parsed) ? (parsed as Array<{ value?: unknown }>) : [parsed as { value?: unknown }]
-
-    const value = fields[0]?.value
-
-    if (typeof value !== "string" || value === "") {
-        throw new TokenCredentialMissingError(itemId)
-    }
-
-    return value
+    setCachedToken(cache, tag, credential)
+    return credential
 }

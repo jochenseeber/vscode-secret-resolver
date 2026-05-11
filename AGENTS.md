@@ -399,14 +399,13 @@ Marketplace and Open VSX, and cuts a GitHub release with the `.vsix` attached.
 
 - VSIX packaging is controlled by the `files` field in `package.json`, not by
   `.vscodeignore`; both mechanisms achieve the same result. [2026-05-10]
-- Test files in `spec/` use intentional non-word strings (e.g. `"ello"`,
-  `"héllo"`, `"wörld"`) as test data — suppress cspell on those lines with
-  `// cspell:disable-line` rather than adding garbage words to `cspell.dict`.
-  [2026-05-10]
+- Test files in `spec/` use intentional non-word strings — suppress cspell on
+  those lines with `// cspell:disable-line` rather than adding garbage words to
+  `cspell.dict`. [2026-05-10]
 - The `tasks.json` intentionally contains only `compile` and `watch` tasks; all
   other build/test/release operations use `nx` targets directly (via terminal
   or `nx run`). [2026-05-10]
-- Shared error-normalisation logic lives in `normalizeOpCliError` (exported
+- Shared error-normalization logic lives in `normalizeOpCliError` (exported
   from `src/opInject.ts`); `OpCli` imports it and account/token resolvers call
   `OpCli` instead of using `execFile` directly. The internal `normalizeError`
   in `opInject.ts` is separate (wraps AbortError in `OpInjectAbortedError` with

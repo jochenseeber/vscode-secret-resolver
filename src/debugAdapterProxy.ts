@@ -3,7 +3,8 @@ import * as fs from "node:fs"
 import * as vscode from "vscode"
 
 import { isRunInTerminalRequest } from "./launchRewrite"
-import { defaultGetProcessTree, type GetProcessTreeFn } from "./processTree"
+import { OpRunner } from "./opRunner"
+import { createDefaultGetProcessTree, type GetProcessTreeFn, type PsRunner } from "./processTree"
 import { RunInTerminalEnvRewriter, type ServiceAccountTokenProvider } from "./runInTerminalEnvRewriter"
 import { parseSessionConfig, type SecretResolverSessionConfig } from "./sessionConfig"
 import { type KillFn, StopSignalController } from "./stopSignalController"
@@ -48,6 +49,7 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
     constructor(
         private readonly registry: TempDirRegistry,
         private readonly sessionConfig: SecretResolverSessionConfig | undefined,
+        private readonly runner: OpRunner,
         kill: KillFn,
         setKillTimer: (
             cb: () => void,
@@ -74,10 +76,7 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
             return
         }
 
-        const opPath = vscode.workspace
-            .getConfiguration("secretResolver")
-            .get<string>("opPath", "op")
-        const dir = this.envRewriter.rewrite(message, opPath, this.sessionConfig)
+        const dir = this.envRewriter.rewrite(message, this.runner, this.sessionConfig)
 
         if (dir !== undefined) {
             this.dirs.push(dir)
@@ -114,19 +113,20 @@ class SecretDebugAdapterTracker implements vscode.DebugAdapterTracker {
     }
 }
 
+export interface TrackerFactoryOptions {
+    kill?: KillFn
+    setKillTimer?: (cb: () => void, ms: number) => NodeJS.Timeout
+    clearKillTimer?: (handle: NodeJS.Timeout) => void
+    psRunner?: PsRunner
+    /** Override the process-tree reader. Takes precedence over `psRunner`. */
+    getProcessTree?: GetProcessTreeFn
+    getServiceAccountToken?: (tag: string) => string | undefined
+}
+
 export class SecretDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFactory {
     constructor(
         private readonly registry: TempDirRegistry,
-        private readonly kill: KillFn = (pid, sig) => {
-            process.kill(pid, sig)
-        },
-        private readonly setKillTimer: (
-            cb: () => void,
-            ms: number,
-        ) => NodeJS.Timeout = setTimeout,
-        private readonly clearKillTimer: (handle: NodeJS.Timeout) => void = clearTimeout,
-        private readonly getProcessTree: GetProcessTreeFn = defaultGetProcessTree,
-        private readonly getServiceAccountToken: (tag: string) => string | undefined = () => undefined,
+        private readonly options: TrackerFactoryOptions = {},
     ) {}
 
     createDebugAdapterTracker(
@@ -136,14 +136,22 @@ export class SecretDebugAdapterTrackerFactory implements vscode.DebugAdapterTrac
             return undefined
         }
 
+        const opPath = vscode.workspace
+            .getConfiguration("secretResolver")
+            .get<string>("opPath", "op")
+        const opRunner = new OpRunner(opPath)
+        const getProcessTree = this.options.getProcessTree
+            ?? createDefaultGetProcessTree(this.options.psRunner)
+
         return new SecretDebugAdapterTracker(
             this.registry,
             parseSessionConfig(session.configuration),
-            this.kill,
-            this.setKillTimer,
-            this.clearKillTimer,
-            this.getProcessTree,
-            this.getServiceAccountToken,
+            opRunner,
+            this.options.kill ?? ((pid, sig) => { process.kill(pid, sig) }),
+            this.options.setKillTimer ?? setTimeout,
+            this.options.clearKillTimer ?? clearTimeout,
+            getProcessTree,
+            this.options.getServiceAccountToken ?? (() => undefined),
         )
     }
 }

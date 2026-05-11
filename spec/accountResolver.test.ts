@@ -10,12 +10,14 @@ import {
     resolveAccountForEmail,
     resolveAccountForGitConfig,
 } from "../src/accountResolver"
-import { OpCliNotFoundError, OpInjectError } from "../src/opInject"
+import { GitRunner } from "../src/gitRunner"
+import { OpCliNotFoundError, OpInjectError, OpRunner } from "../src/opRunner"
 import { SecretCache } from "../src/secretCache"
 
 /**
  * Fake `op` binary for `account list` calls.
- * `listResult`: JSON to emit, `"fail"` to exit non-zero, `"slow"` to sleep
+ * `listResult`: JSON to emit, `"fail"` to exit non-zero, `"slow"` to sleep.
+ * Handles an optional leading `--account <id>` global flag.
  */
 async function makeFakeOp(opts: {
     listResult: string | "fail" | "slow"
@@ -37,6 +39,8 @@ async function makeFakeOp(opts: {
     const body = [
         "#!/usr/bin/env bash",
         logLine,
+        "# Skip optional leading --account <id>",
+        "while [[ \"$1\" == \"--account\" ]]; do shift; shift; done",
         "subcmd=\"$1\"; shift",
         "if [[ \"$subcmd\" == \"account\" ]]; then",
         "  subcmd2=\"$1\"; shift",
@@ -86,19 +90,6 @@ async function makeFakeGit(opts: {
     return { path: file, dir, cleanup: () => fs.rm(dir, { recursive: true, force: true }) }
 }
 
-/** Prepends `dir` to `PATH` for the duration of `body`. */
-async function withPath<T>(dir: string, body: () => Promise<T>): Promise<T> {
-    const original = process.env.PATH ?? ""
-    process.env.PATH = `${dir}${path.delimiter}${original}`
-
-    try {
-        return await body()
-    }
-    finally {
-        process.env.PATH = original
-    }
-}
-
 class MapGitEmailStore implements GitEmailStore {
     private readonly map = new Map<string, string>()
 
@@ -142,7 +133,7 @@ suite("resolveAccountForEmail", () => {
 
         try {
             const cache = new SecretCache()
-            const uuid = await resolveAccountForEmail("user@example.com", fake.path, cache)
+            const uuid = await resolveAccountForEmail("user@example.com", new OpRunner(fake.path), cache)
             assert.strictEqual(uuid, "acct-uuid-1")
         }
         finally {
@@ -157,12 +148,12 @@ suite("resolveAccountForEmail", () => {
 
         try {
             const cache = new SecretCache()
-            await resolveAccountForEmail("user@example.com", fake.path, cache)
+            await resolveAccountForEmail("user@example.com", new OpRunner(fake.path), cache)
 
             const badFake = await makeFakeOp({ listResult: "fail" })
 
             try {
-                const uuid = await resolveAccountForEmail("user@example.com", badFake.path, cache)
+                const uuid = await resolveAccountForEmail("user@example.com", new OpRunner(badFake.path), cache)
                 assert.strictEqual(uuid, "acct-uuid-1")
             }
             finally {
@@ -182,7 +173,7 @@ suite("resolveAccountForEmail", () => {
         try {
             const cache = new SecretCache()
             await assert.rejects(
-                resolveAccountForEmail("nobody@example.com", fake.path, cache),
+                resolveAccountForEmail("nobody@example.com", new OpRunner(fake.path), cache),
                 (err) =>
                     err instanceof AccountNotFoundError
                     && (err as AccountNotFoundError).message.includes("nobody@example.com"),
@@ -200,7 +191,7 @@ suite("resolveAccountForEmail", () => {
 
         try {
             const cache = new SecretCache()
-            const uuid = await resolveAccountForEmail("OTHER@EXAMPLE.COM", fake.path, cache)
+            const uuid = await resolveAccountForEmail("OTHER@EXAMPLE.COM", new OpRunner(fake.path), cache)
             assert.strictEqual(uuid, "acct-uuid-2")
         }
         finally {
@@ -211,7 +202,7 @@ suite("resolveAccountForEmail", () => {
     test("throws OpCliNotFoundError when op binary does not exist", async () => {
         const cache = new SecretCache()
         await assert.rejects(
-            resolveAccountForEmail("user@example.com", "/no/such/op", cache),
+            resolveAccountForEmail("user@example.com", new OpRunner("/no/such/op"), cache),
             (err) => err instanceof OpCliNotFoundError,
         )
     })
@@ -224,7 +215,7 @@ suite("resolveAccountForEmail", () => {
         try {
             const cache = new SecretCache()
             await assert.rejects(
-                resolveAccountForEmail("user@example.com", fake.path, cache),
+                resolveAccountForEmail("user@example.com", new OpRunner(fake.path), cache),
                 (err) => err instanceof OpInjectError,
             )
         }
@@ -243,7 +234,7 @@ suite("resolveAccountForEmail", () => {
             const controller = new AbortController()
             const promise = resolveAccountForEmail(
                 "user@example.com",
-                fake.path,
+                new OpRunner(fake.path),
                 cache,
                 controller.signal,
             )
@@ -266,8 +257,15 @@ suite("resolveAccountForGitConfig", () => {
         try {
             const cache = new SecretCache()
             const store = new MapGitEmailStore()
-            const uuid = await withPath(fakeGit.dir, () =>
-                resolveAccountForGitConfig(".", fakeOp.path, cache, undefined, "/workspace", store))
+            const uuid = await resolveAccountForGitConfig(
+                ".",
+                new OpRunner(fakeOp.path),
+                new GitRunner(fakeGit.path),
+                cache,
+                undefined,
+                "/workspace",
+                store,
+            )
             assert.strictEqual(uuid, "acct-uuid-1")
         }
         finally {
@@ -276,7 +274,7 @@ suite("resolveAccountForGitConfig", () => {
         }
     })
 
-    test("uses .git-appended path as gitEmailStore key and git -C argument", async () => {
+    test("uses .git-appended path as gitEmailStore key", async () => {
         if (process.platform === "win32") return
 
         const fakeGit = await makeFakeGit({ userEmail: "user@example.com" })
@@ -285,8 +283,15 @@ suite("resolveAccountForGitConfig", () => {
         try {
             const cache = new SecretCache()
             const store = new MapGitEmailStore()
-            await withPath(fakeGit.dir, () =>
-                resolveAccountForGitConfig(".", fakeOp.path, cache, undefined, "/workspace", store))
+            await resolveAccountForGitConfig(
+                ".",
+                new OpRunner(fakeOp.path),
+                new GitRunner(fakeGit.path),
+                cache,
+                undefined,
+                "/workspace",
+                store,
+            )
 
             const expectedGitDir = path.join("/workspace", ".git")
             assert.strictEqual(store.get(expectedGitDir), "user@example.com")
@@ -311,8 +316,15 @@ suite("resolveAccountForGitConfig", () => {
             // Pre-populate the store with the .git dir key
             store.set(path.join("/workspace", ".git"), "user@example.com")
 
-            const uuid = await withPath(fakeGit.dir, () =>
-                resolveAccountForGitConfig(".", fakeOp.path, cache, undefined, "/workspace", store))
+            const uuid = await resolveAccountForGitConfig(
+                ".",
+                new OpRunner(fakeOp.path),
+                new GitRunner(fakeGit.path),
+                cache,
+                undefined,
+                "/workspace",
+                store,
+            )
             assert.strictEqual(uuid, "acct-uuid-1")
 
             const log = await fs.readFile(gitLogFile, "utf8").catch(() => "")
@@ -334,8 +346,15 @@ suite("resolveAccountForGitConfig", () => {
         try {
             const cache = new SecretCache()
             const store = new MapGitEmailStore()
-            await withPath(fakeGit.dir, () =>
-                resolveAccountForGitConfig("backend", fakeOp.path, cache, undefined, "/workspace", store))
+            await resolveAccountForGitConfig(
+                "backend",
+                new OpRunner(fakeOp.path),
+                new GitRunner(fakeGit.path),
+                cache,
+                undefined,
+                "/workspace",
+                store,
+            )
 
             assert.strictEqual(
                 store.get(path.join("/workspace", "backend", ".git")),
@@ -351,7 +370,12 @@ suite("resolveAccountForGitConfig", () => {
     test("throws an Error for an absolute subdir", async () => {
         const cache = new SecretCache()
         await assert.rejects(
-            resolveAccountForGitConfig("/absolute/path", "op", cache),
+            resolveAccountForGitConfig(
+                "/absolute/path",
+                new OpRunner("op"),
+                new GitRunner(),
+                cache,
+            ),
             (err) => err instanceof Error
                 && (err as Error).message.includes("SECRET_RESOLVER_ACCOUNT_GIT_CONFIG"),
         )
@@ -366,8 +390,14 @@ suite("resolveAccountForGitConfig", () => {
         try {
             const cache = new SecretCache()
             await assert.rejects(
-                withPath(fakeGit.dir, () =>
-                    resolveAccountForGitConfig(".", fakeOp.path, cache, undefined, "/workspace")),
+                resolveAccountForGitConfig(
+                    ".",
+                    new OpRunner(fakeOp.path),
+                    new GitRunner(fakeGit.path),
+                    cache,
+                    undefined,
+                    "/workspace",
+                ),
                 (err) => err instanceof GitEmailNotFoundError,
             )
         }
@@ -380,21 +410,23 @@ suite("resolveAccountForGitConfig", () => {
     test("throws GitEmailNotFoundError when git binary is not found", async () => {
         if (process.platform === "win32") return
 
-        const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), "sr-empty-"))
         const fakeOp = await makeFakeOp({ listResult: ACCOUNTS_JSON })
-        const originalPath = process.env.PATH
 
         try {
-            process.env.PATH = emptyDir
             const cache = new SecretCache()
             await assert.rejects(
-                resolveAccountForGitConfig(".", fakeOp.path, cache, undefined, "/workspace"),
+                resolveAccountForGitConfig(
+                    ".",
+                    new OpRunner(fakeOp.path),
+                    new GitRunner("/no/such/git"),
+                    cache,
+                    undefined,
+                    "/workspace",
+                ),
                 (err) => err instanceof GitEmailNotFoundError,
             )
         }
         finally {
-            process.env.PATH = originalPath
-            await fs.rm(emptyDir, { recursive: true, force: true })
             await fakeOp.cleanup()
         }
     })
@@ -410,14 +442,14 @@ suite("resolveAccountForGitConfig", () => {
             const fakeGit = await makeFakeGit({ userEmail: "user@example.com" })
 
             try {
-                const promise = withPath(fakeGit.dir, () =>
-                    resolveAccountForGitConfig(
-                        ".",
-                        fakeOp.path,
-                        cache,
-                        controller.signal,
-                        "/workspace",
-                    ))
+                const promise = resolveAccountForGitConfig(
+                    ".",
+                    new OpRunner(fakeOp.path),
+                    new GitRunner(fakeGit.path),
+                    cache,
+                    controller.signal,
+                    "/workspace",
+                )
                 setTimeout(() => controller.abort(), 50)
                 await assert.rejects(promise)
             }

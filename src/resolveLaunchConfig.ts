@@ -19,26 +19,26 @@ import {
     stripInternalEnvVars,
     TOKEN_TAG_VAR,
 } from "./envHelpers"
-import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectRunner } from "./opInject"
+import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, OpRunner } from "./opRunner"
 import { getCachedResolvedRef, setCachedResolvedRef } from "./resolverCache"
 import type { SecretCache } from "./secretCache"
 import { buildSessionConfig, SECRET_RESOLVER_CONFIG_FIELD } from "./sessionConfig"
 
-const TERMINAL_CONSOLES = new Set([
-    "integratedTerminal",
-    "externalTerminal",
-])
+type TerminalConsole = "integratedTerminal" | "externalTerminal"
+
+function isTerminalConsoleKind(kind: string): kind is TerminalConsole {
+    return (kind === "integratedTerminal") || (kind === "externalTerminal")
+}
 
 export interface ResolveDeps {
     cache: SecretCache
-    runner: OpInjectRunner
+    runner: OpRunner
     parseEnvFile: (path: string) => Promise<StringEnvMap>
-    getOpPath: () => string
     showError: (message: string) => void
     showWarning: (message: string) => void
-    resolveTokenForTag?: (tag: string, opPath: string, signal?: AbortSignal, account?: string) => Promise<string>
-    resolveAccountForEmail?: (email: string, opPath: string, signal?: AbortSignal) => Promise<string>
-    resolveAccountForGitConfig?: (subdir: string, opPath: string, signal?: AbortSignal) => Promise<string>
+    resolveTokenForTag?: (tag: string, signal?: AbortSignal, account?: string) => Promise<string>
+    resolveAccountForEmail?: (email: string, signal?: AbortSignal) => Promise<string>
+    resolveAccountForGitConfig?: (subdir: string, signal?: AbortSignal) => Promise<string>
 }
 
 type LaunchEnvReadResult =
@@ -178,7 +178,7 @@ function parseLaunchOptions(
         typeof modeValue === "string" ? modeValue : null,
         deps.showWarning,
     )
-    const isTerminalConsole = TERMINAL_CONSOLES.has(consoleKind)
+    const isTerminalConsole = isTerminalConsoleKind(consoleKind)
     const useOpRun = mode === "op" && isTerminalConsole
     const tokenTag = getTrimmedEnvValue(mergedEnv, TOKEN_TAG_VAR)
     const signalOnStop = parseSignalOnStop(
@@ -213,7 +213,7 @@ async function resolveLaunchAccount(
 
     if (selection.email !== null && deps.resolveAccountForEmail !== undefined) {
         try {
-            return await deps.resolveAccountForEmail(selection.email, deps.getOpPath(), signal)
+            return await deps.resolveAccountForEmail(selection.email, signal)
         }
         catch (err) {
             deps.showError(`Secret Resolver: ${(err as Error).message}`)
@@ -223,7 +223,7 @@ async function resolveLaunchAccount(
 
     if (selection.gitSubdir !== null && deps.resolveAccountForGitConfig !== undefined) {
         try {
-            return await deps.resolveAccountForGitConfig(selection.gitSubdir, deps.getOpPath(), signal)
+            return await deps.resolveAccountForGitConfig(selection.gitSubdir, signal)
         }
         catch (err) {
             deps.showError(`Secret Resolver: ${(err as Error).message}`)
@@ -247,7 +247,6 @@ async function resolveLaunchToken(
     try {
         return await deps.resolveTokenForTag(
             options.tokenTag,
-            deps.getOpPath(),
             signal,
             accountId ?? undefined,
         )
@@ -361,12 +360,9 @@ async function resolveAllRefs(
     let resolved: Map<string, string>
 
     try {
-        resolved = await deps.runner.resolve(
+        resolved = await deps.runner.inject(
             missing,
-            deps.getOpPath(),
-            signal,
-            token,
-            account,
+            { signal, token, account },
         )
     }
     catch (err) {

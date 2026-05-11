@@ -1,23 +1,21 @@
 import * as assert from "node:assert"
 
 import type { StringEnvMap } from "../src/envHelpers"
-import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectRunner } from "../src/opInject"
+import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectOptions } from "../src/opRunner"
 import { type ResolveDeps, resolveLaunchConfig } from "../src/resolveLaunchConfig"
 import { SecretCache } from "../src/secretCache"
 import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../src/sessionConfig"
 
-class FakeRunner implements OpInjectRunner {
-    calls: Array<{ refs: string[]; token: string | undefined; account: string | undefined }> = []
+class FakeRunner {
+    readonly opPath = "fake"
+    calls: Array<{ refs: readonly string[]; token: string | undefined; account: string | undefined }> = []
     nextResult: Map<string, string> | Error = new Map()
 
-    async resolve(
+    async inject(
         refs: readonly string[],
-        _opPath: string,
-        _signal?: AbortSignal,
-        token?: string,
-        account?: string,
+        options: OpInjectOptions = {},
     ): Promise<Map<string, string>> {
-        this.calls.push({ refs: [...refs], token, account })
+        this.calls.push({ refs, token: options.token, account: options.account })
 
         if (this.nextResult instanceof Error) {
             throw this.nextResult
@@ -33,13 +31,12 @@ interface Recorder {
 }
 
 function makeDeps(opts: {
-    runner?: OpInjectRunner
+    runner?: FakeRunner
     cache?: SecretCache
     files?: Record<string, StringEnvMap>
-    opPath?: string
-    resolveTokenForTag?: (tag: string, opPath: string, signal?: AbortSignal, account?: string) => Promise<string>
-    resolveAccountForEmail?: (email: string, opPath: string, signal?: AbortSignal) => Promise<string>
-    resolveAccountForGitConfig?: (subdir: string, opPath: string, signal?: AbortSignal) => Promise<string>
+    resolveTokenForTag?: (tag: string, signal?: AbortSignal, account?: string) => Promise<string>
+    resolveAccountForEmail?: (email: string, signal?: AbortSignal) => Promise<string>
+    resolveAccountForGitConfig?: (subdir: string, signal?: AbortSignal) => Promise<string>
 }): { deps: ResolveDeps; recorder: Recorder; cache: SecretCache } {
     const recorder: Recorder = { errors: [], warnings: [] }
     const cache = opts.cache ?? new SecretCache()
@@ -47,7 +44,7 @@ function makeDeps(opts: {
     const files = opts.files ?? {}
     const deps: ResolveDeps = {
         cache,
-        runner,
+        runner: runner as unknown as ResolveDeps["runner"],
         parseEnvFile: async (p: string) => {
             if (p in files) {
                 return files[p]
@@ -58,7 +55,6 @@ function makeDeps(opts: {
             )
             throw new EnvFileNotFoundError(p)
         },
-        getOpPath: () => opts.opPath ?? "op",
         showError: (m) => {
             recorder.errors.push(m)
         },
@@ -691,7 +687,7 @@ suite("resolveLaunchConfig", () => {
         runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
         const { deps } = makeDeps({
             runner,
-            resolveTokenForTag: async (tag, _opPath, _signal, account) => {
+            resolveTokenForTag: async (tag, _signal, account) => {
                 tokenTagCalls.push({ tag, account })
                 return "tok"
             },
@@ -801,7 +797,7 @@ suite("resolveLaunchConfig", () => {
         const { deps } = makeDeps({
             runner,
             resolveAccountForEmail: async () => "acct-uuid-from-email",
-            resolveTokenForTag: async (tag, _opPath, _signal, account) => {
+            resolveTokenForTag: async (tag, _signal, account) => {
                 tokenTagCalls.push({ tag, account })
                 return "tok"
             },

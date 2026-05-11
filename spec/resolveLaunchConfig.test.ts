@@ -1,17 +1,18 @@
 import * as assert from "node:assert"
 
 import { MODE_VAR, SIGNAL_ON_STOP_VAR, type StringEnvMap, TOKEN_TAG_VAR } from "../src/envHelpers"
-import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectRunner } from "../src/opInject"
+import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectOptions } from "../src/opRunner"
 import { type ResolveDeps, resolveLaunchConfig } from "../src/resolveLaunchConfig"
 import { SecretCache } from "../src/secretCache"
 import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../src/sessionConfig"
 
-class FakeRunner implements OpInjectRunner {
-    calls: string[][] = []
+class FakeRunner {
+    readonly opPath = "fake"
+    calls: Array<readonly string[]> = []
     nextResult: Map<string, string> | Error = new Map()
 
-    async resolve(refs: readonly string[]): Promise<Map<string, string>> {
-        this.calls.push([...refs])
+    async inject(refs: readonly string[], _options: OpInjectOptions = {}): Promise<Map<string, string>> {
+        this.calls.push(refs)
 
         if (this.nextResult instanceof Error) {
             throw this.nextResult
@@ -27,13 +28,12 @@ interface Recorder {
 }
 
 function makeDeps(opts: {
-    runner?: OpInjectRunner
+    runner?: FakeRunner
     cache?: SecretCache
     files?: Record<string, StringEnvMap>
-    opPath?: string
-    resolveTokenForTag?: (tag: string, opPath: string, signal?: AbortSignal, account?: string) => Promise<string>
-    resolveAccountForEmail?: (email: string, opPath: string, signal?: AbortSignal) => Promise<string>
-    resolveAccountForGitConfig?: (subdir: string, opPath: string, signal?: AbortSignal) => Promise<string>
+    resolveTokenForTag?: (tag: string, signal?: AbortSignal, account?: string) => Promise<string>
+    resolveAccountForEmail?: (email: string, signal?: AbortSignal) => Promise<string>
+    resolveAccountForGitConfig?: (subdir: string, signal?: AbortSignal) => Promise<string>
 }): { deps: ResolveDeps; recorder: Recorder; cache: SecretCache } {
     const recorder: Recorder = { errors: [], warnings: [] }
     const cache = opts.cache ?? new SecretCache()
@@ -41,7 +41,9 @@ function makeDeps(opts: {
     const files = opts.files ?? {}
     const deps: ResolveDeps = {
         cache,
-        runner,
+        // FakeRunner satisfies the structural shape ResolveDeps.runner requires
+        // (opPath + inject). Cast needed because FakeRunner omits the list/get methods.
+        runner: runner as unknown as ResolveDeps["runner"],
         parseEnvFile: async (p: string) => {
             if (p in files) {
                 return files[p]
@@ -52,7 +54,6 @@ function makeDeps(opts: {
             )
             throw new EnvFileNotFoundError(p)
         },
-        getOpPath: () => opts.opPath ?? "op",
         showError: (m) => {
             recorder.errors.push(m)
         },

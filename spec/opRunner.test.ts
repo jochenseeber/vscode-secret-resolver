@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { DefaultOpInjectRunner, OpCliNotFoundError, OpInjectAbortedError, OpInjectError } from "../src/opInject"
+import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, OpRunner } from "../src/opRunner"
 
 /**
  * Writes a small POSIX shell script that mimics `op inject`. Reads the
@@ -73,14 +73,10 @@ async function makeFakeOp(
     }
 }
 
-suite("DefaultOpInjectRunner", () => {
+suite("OpRunner.inject", () => {
     test("resolves zero refs without spawning", async () => {
-        const runner = new DefaultOpInjectRunner()
         // Use an obviously missing path so any spawn would fail loudly.
-        const result = await runner.resolve(
-            [],
-            "/does/not/exist/should-never-spawn",
-        )
+        const result = await new OpRunner("/does/not/exist/should-never-spawn").inject([])
         assert.strictEqual(result.size, 0)
     })
 
@@ -92,10 +88,8 @@ suite("DefaultOpInjectRunner", () => {
         const fake = await makeFakeOp("ok")
 
         try {
-            const runner = new DefaultOpInjectRunner()
-            const result = await runner.resolve(
+            const result = await new OpRunner(fake.path).inject(
                 ["op://Vault/Item/a", "op://Vault/Item/b"],
-                fake.path,
             )
             assert.deepStrictEqual(
                 Object.fromEntries(result),
@@ -111,9 +105,8 @@ suite("DefaultOpInjectRunner", () => {
     })
 
     test("translates ENOENT into OpCliNotFoundError", async () => {
-        const runner = new DefaultOpInjectRunner()
         await assert.rejects(
-            runner.resolve(["op://x/y/z"], "/no/such/op-binary"),
+            new OpRunner("/no/such/op-binary").inject(["op://x/y/z"]),
             (err) =>
                 err instanceof OpCliNotFoundError
                 && (err as OpCliNotFoundError).opPath === "/no/such/op-binary",
@@ -128,9 +121,8 @@ suite("DefaultOpInjectRunner", () => {
         const fake = await makeFakeOp("fail")
 
         try {
-            const runner = new DefaultOpInjectRunner()
             await assert.rejects(
-                runner.resolve(["op://x/y/z"], fake.path),
+                new OpRunner(fake.path).inject(["op://x/y/z"]),
                 (err) => {
                     if (!(err instanceof OpInjectError)) {
                         return false
@@ -153,12 +145,10 @@ suite("DefaultOpInjectRunner", () => {
         const fake = await makeFakeOp("slow")
 
         try {
-            const runner = new DefaultOpInjectRunner()
             const controller = new AbortController()
-            const promise = runner.resolve(
+            const promise = new OpRunner(fake.path).inject(
                 ["op://x/y/z"],
-                fake.path,
-                controller.signal,
+                { signal: controller.signal },
             )
             // Abort before the 5s sleep finishes.
             setTimeout(() => controller.abort(), 50)
@@ -183,13 +173,9 @@ suite("DefaultOpInjectRunner", () => {
             const fake = await makeFakeOp("ok", argLogFile)
 
             try {
-                const runner = new DefaultOpInjectRunner()
-                await runner.resolve(
+                await new OpRunner(fake.path).inject(
                     ["op://Vault/Item/a"],
-                    fake.path,
-                    undefined,
-                    undefined,
-                    "SOME_ACCOUNT_ID",
+                    { account: "SOME_ACCOUNT_ID" },
                 )
                 const log = await fs.readFile(argLogFile, "utf8")
                 assert.ok(
@@ -204,5 +190,79 @@ suite("DefaultOpInjectRunner", () => {
         finally {
             await fs.rm(argLogFile, { force: true })
         }
+    })
+})
+
+suite("OpRunner.buildRunArgs", () => {
+    test("wraps the args with op run --env-file and a -- separator", () => {
+        assert.deepStrictEqual(
+            new OpRunner("op").buildRunArgs("/tmp/sr/env", ["node", "app.js"]),
+            ["op", "run", "--env-file=/tmp/sr/env", "--", "node", "app.js"],
+        )
+    })
+
+    test("honors an absolute op path", () => {
+        assert.deepStrictEqual(
+            new OpRunner("/opt/homebrew/bin/op").buildRunArgs(
+                "/tmp/sr/env",
+                ["python", "-m", "svc"],
+            ),
+            [
+                "/opt/homebrew/bin/op",
+                "run",
+                "--env-file=/tmp/sr/env",
+                "--",
+                "python",
+                "-m",
+                "svc",
+            ],
+        )
+    })
+
+    test("handles an empty args array", () => {
+        assert.deepStrictEqual(
+            new OpRunner("op").buildRunArgs("/tmp/sr/env", []),
+            ["op", "run", "--env-file=/tmp/sr/env", "--"],
+        )
+    })
+
+    test("does not mutate the input args", () => {
+        const input = ["node", "app.js"]
+        const snapshot = [...input]
+        new OpRunner("op").buildRunArgs("/tmp/sr/env", input)
+        assert.deepStrictEqual(input, snapshot)
+    })
+
+    test("preserves arg values verbatim (no quoting or escaping)", () => {
+        assert.deepStrictEqual(
+            new OpRunner("op").buildRunArgs("/tmp/sr/env", [
+                "echo",
+                "hello world",
+                "a'b\"c",
+            ]),
+            [
+                "op",
+                "run",
+                "--env-file=/tmp/sr/env",
+                "--",
+                "echo",
+                "hello world",
+                "a'b\"c",
+            ],
+        )
+    })
+
+    test("inserts --account after 'run' and before --env-file when account is provided", () => {
+        assert.deepStrictEqual(
+            new OpRunner("op").buildRunArgs("/tmp/sr/env", ["node", "app.js"], "my-account"),
+            ["op", "run", "--account", "my-account", "--env-file=/tmp/sr/env", "--", "node", "app.js"],
+        )
+    })
+
+    test("omits --account when account is undefined", () => {
+        assert.deepStrictEqual(
+            new OpRunner("op").buildRunArgs("/tmp/sr/env", ["node", "app.js"], undefined),
+            ["op", "run", "--env-file=/tmp/sr/env", "--", "node", "app.js"],
+        )
     })
 })

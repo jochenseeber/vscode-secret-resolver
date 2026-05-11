@@ -71,14 +71,13 @@ function makeTrackerWithStubs(opts?: {
             ...(opts?.sessionConfig ? { [SECRET_RESOLVER_CONFIG_FIELD]: opts.sessionConfig } : {}),
         },
     } as unknown as vscode.DebugSession
-    const tracker = new SecretDebugAdapterTrackerFactory(
-        registry,
+    const tracker = new SecretDebugAdapterTrackerFactory(registry, {
         kill,
         setKillTimer,
         clearKillTimer,
-        getDescendants,
-        opts?.getServiceAccountToken ?? (() => undefined),
-    ).createDebugAdapterTracker(session) as
+        getProcessTree: getDescendants,
+        getServiceAccountToken: opts?.getServiceAccountToken ?? (() => undefined),
+    }).createDebugAdapterTracker(session) as
         | vscode.DebugAdapterTracker
         | undefined
 
@@ -993,13 +992,12 @@ suite("runtime integration", () => {
                 } as SecretResolverSessionConfig,
             },
         } as unknown as vscode.DebugSession
-        const tracker = new SecretDebugAdapterTrackerFactory(
-            registry,
+        const tracker = new SecretDebugAdapterTrackerFactory(registry, {
             kill,
-            setTimeout,
-            clearTimeout,
-            getDescendants,
-        )
+            setKillTimer: setTimeout,
+            clearKillTimer: clearTimeout,
+            getProcessTree: getDescendants,
+        })
             .createDebugAdapterTracker(session) as
                 | vscode.DebugAdapterTracker
                 | undefined

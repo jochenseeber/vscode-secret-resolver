@@ -1,6 +1,6 @@
 import * as assert from "node:assert"
 
-import { buildOpRunArgs, isRunInTerminalRequest } from "../src/launchRewrite"
+import { isRunInTerminalRequest } from "../src/launchRewrite"
 
 suite("isRunInTerminalRequest", () => {
     test("accepts a well-formed runInTerminal request", () => {
@@ -81,81 +81,6 @@ suite("isRunInTerminalRequest", () => {
                 arguments: { args: [] },
             }),
             true,
-        )
-    })
-})
-
-suite("buildOpRunArgs", () => {
-    test("wraps the args with op run --env-file and a -- separator", () => {
-        assert.deepStrictEqual(
-            buildOpRunArgs("op", "/tmp/sr/env", ["node", "app.js"]),
-            ["op", "run", "--env-file=/tmp/sr/env", "--", "node", "app.js"],
-        )
-    })
-
-    test("honors an absolute op path", () => {
-        assert.deepStrictEqual(
-            buildOpRunArgs(
-                "/opt/homebrew/bin/op",
-                "/tmp/sr/env",
-                ["python", "-m", "svc"],
-            ),
-            [
-                "/opt/homebrew/bin/op",
-                "run",
-                "--env-file=/tmp/sr/env",
-                "--",
-                "python",
-                "-m",
-                "svc",
-            ],
-        )
-    })
-
-    test("handles an empty args array", () => {
-        assert.deepStrictEqual(
-            buildOpRunArgs("op", "/tmp/sr/env", []),
-            ["op", "run", "--env-file=/tmp/sr/env", "--"],
-        )
-    })
-
-    test("does not mutate the input args", () => {
-        const input = ["node", "app.js"]
-        const snapshot = [...input]
-        buildOpRunArgs("op", "/tmp/sr/env", input)
-        assert.deepStrictEqual(input, snapshot)
-    })
-
-    test("preserves arg values verbatim (no quoting or escaping)", () => {
-        assert.deepStrictEqual(
-            buildOpRunArgs("op", "/tmp/sr/env", [
-                "echo",
-                "hello world",
-                "a'b\"c",
-            ]),
-            [
-                "op",
-                "run",
-                "--env-file=/tmp/sr/env",
-                "--",
-                "echo",
-                "hello world",
-                "a'b\"c",
-            ],
-        )
-    })
-
-    test("inserts --account before --env-file when account is provided", () => {
-        assert.deepStrictEqual(
-            buildOpRunArgs("op", "/tmp/sr/env", ["node", "app.js"], "my-account"),
-            ["op", "run", "--account", "my-account", "--env-file=/tmp/sr/env", "--", "node", "app.js"],
-        )
-    })
-
-    test("omits --account when account is undefined", () => {
-        assert.deepStrictEqual(
-            buildOpRunArgs("op", "/tmp/sr/env", ["node", "app.js"], undefined),
-            ["op", "run", "--env-file=/tmp/sr/env", "--", "node", "app.js"],
         )
     })
 })

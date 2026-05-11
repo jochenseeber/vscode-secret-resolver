@@ -1,118 +1,260 @@
-# Code Review — `src/`
+# Code Review — `src/` (post-refactor)
 
-Findings are grouped by concern and ordered roughly by impact. Each item
-describes the current state, the problem, and a concrete suggestion.
+Findings are ordered roughly by impact. Each item describes the current state,
+the problem, and a concrete suggestion.
 
----
+## What improved since the last review
 
-## 1. `resolveLaunchConfig.ts` — env-var normalization repeated four times
+The refactor made significant progress. Addressed items from the previous pass:
 
-**Current state.** Four env vars are coerced from the merged map into
-`string | null` with identical inline expressions:
-
-```typescript
-const tokenTagValue = merged[TOKEN_TAG_VAR]
-const tokenTag = typeof tokenTagValue === "string" && tokenTagValue.trim() !== ""
-    ? tokenTagValue.trim()
-    : null
-
-const accountIdValue = merged[ACCOUNT_ID_VAR]
-let accountId: string | null = typeof accountIdValue === "string" && accountIdValue.trim() !== ""
-    ? accountIdValue.trim()
-    : null
-// … same pattern again for ACCOUNT_EMAIL_VAR and ACCOUNT_GIT_CONFIG_VAR
-```
-
-**Problem.** Duplicated logic and noise; easy to introduce an inconsistency
-when adding a fifth var.
-
-**Suggestion.** Extract a one-liner helper:
-
-```typescript
-function getEnvVar(env: EnvMap, key: string): string | null {
-    const value = env[key]
-    const trimmed = typeof value === "string" ? value.trim() : ""
-    return trimmed !== "" ? trimmed : null
-}
-```
-
-Then every call site becomes `getEnvVar(merged, TOKEN_TAG_VAR)`.
+- `getTrimmedEnvValue` helper extracted and used for most env-var reads
+- Account resolution extracted into `resolveLaunchAccount` (early-return chain)
+- `buildSessionConfig` extracted to `sessionConfig.ts`
+- `parseSignalOnStop` call moved into `parseLaunchOptions`
+- `onDidSendMessage` split via the new `StopSignalController`
+- `showInformationMessage` toasts replaced with `console.info`
+- `WorkspaceStateGitEmailStore.updateBestEffort` now handles errors gracefully
+- `OpCli` class consolidates CLI invocations; `resolverCache.ts` centralizes cache-key namespacing
 
 ---
 
-## 2. `resolveLaunchConfig.ts` — account resolution is a cascade of mutable `if`-blocks
+## 1. `resolveLaunchConfig.ts` — `resolveLaunchAccount` and `resolveLaunchToken` swap null/undefined
 
-**Current state.** Account resolution proceeds through three sequential
-strategies, each guarded by `if (accountId === null)`:
+**Current state.** The two helpers use opposite null/undefined conventions for
+their "absent" and "error" states:
+
+| Return value | `resolveLaunchAccount` | `resolveLaunchToken` |
+| ------------ | ---------------------- | -------------------- |
+| string       | resolved ID            | resolved token       |
+| `null`       | no account configured  | **error — abort**    |
+| `undefined`  | **error — abort**      | no token needed      |
+
+The caller must use different checks depending on which result it examines:
 
 ```typescript
-let accountId: string | null = …  // from ACCOUNT_ID_VAR
+if (accountId === undefined) return undefined   // error for account
+// …
+if (serviceAccountToken === null) return undefined  // error for token
+```
 
-if (accountId === null) {
-    // try ACCOUNT_EMAIL_VAR
-}
+**Problem.** The inversion makes both call sites subtly wrong-looking and is a
+trap when adding a third helper with either convention.
 
-if (accountId === null) {
-    // try ACCOUNT_GIT_CONFIG_VAR
+**Suggestion.** Pick one convention for "error / abort": `undefined`. Use
+`null` for "absent / no value" in both helpers:
+
+```typescript
+// resolveLaunchAccount: null = no account, undefined = abort
+// resolveLaunchToken:   null = no token,   undefined = abort
+
+if (accountId === undefined) return undefined
+// …
+if (serviceAccountToken === undefined) return undefined
+```
+
+This makes every error check uniform and removes the need to remember which
+helper uses which convention.
+
+---
+
+## 2. `stopSignalController.ts` — `vscode.window.showWarningMessage` prevents unit testing
+
+**Current state.** Three paths in `signalProcessTree` call
+`vscode.window.showWarningMessage(...)` directly:
+
+```typescript
+void vscode.window.showWarningMessage(`PID ${rootPid} has no children…`)
+// …
+void vscode.window.showWarningMessage(`PID ${rootPid} has no \`op\` child…`)
+// …
+void vscode.window.showWarningMessage(`\`op\` wrapper(s) … have no children…`)
+```
+
+**Problem.** Everything else in `StopSignalController` is already injectable
+(kill, timers, process tree), but the warning surface is hard-wired to VS Code.
+Unit tests cannot exercise those three branches without the extension host.
+
+**Suggestion.** Add a `warn` parameter to the constructor, typed as
+`(message: string) => void` (the same `WarningReporter` pattern used by
+`parseSecretResolverMode` and `parseSignalOnStop`):
+
+```typescript
+constructor(
+    private readonly sessionConfig: SecretResolverSessionConfig | undefined,
+    private readonly kill: KillFn,
+    private readonly setKillTimer: (cb: () => void, ms: number) => NodeJS.Timeout,
+    private readonly clearKillTimer: (handle: NodeJS.Timeout) => void,
+    private readonly getProcessTree: GetProcessTreeFn,
+    private readonly warn: (message: string) => void = (msg) => {
+        void vscode.window.showWarningMessage(msg)
+    },
+) {}
+```
+
+The `debugAdapterProxy.ts` constructor passes the default implicitly; unit
+tests inject a recorder. The `vscode` import can then move inside the default
+value, keeping it optional for tests.
+
+---
+
+## 3. `opCli.ts` — `withAccount` fragile command-aware arg insertion
+
+**Current state.** `withAccount` special-cases the `item get` subcommand to
+insert `--account` after the item ID at position 2:
+
+```typescript
+if (args[0] === "item" && args[1] === "get" && args.length >= 3) {
+    return ["item", "get", args[2], "--account", account, ...args.slice(3)]
 }
 ```
 
-**Problem.** `accountId` is reassigned inside each block, making the control
-flow implicit. Adding a fourth strategy requires another block in the right
-place.
+Other commands get `--account` inserted after the first two positional args.
 
-**Suggestion.** Extract a private `resolveAccountId` function that takes `merged`
-and returns `Promise<string | null>`. Inside it, try each strategy in sequence
-with early returns:
+**Problem.** Knowing where `--account` belongs requires inspecting the
+subcommand. If the call site changes the arg order, or a future subcommand has
+a different arity, the flag ends up in the wrong place silently. The `op` CLI
+accepts `--account` as a global flag before the subcommand name, so a simpler
+approach avoids this entirely.
+
+**Suggestion.** Prepend `--account` globally:
 
 ```typescript
-async function resolveAccountId(
-    merged: EnvMap,
-    deps: ResolveDeps,
-    signal?: AbortSignal,
-): Promise<string | null> {
-    const directId = getEnvVar(merged, ACCOUNT_ID_VAR)
-    if (directId !== null) return directId
-
-    const email = getEnvVar(merged, ACCOUNT_EMAIL_VAR)
-    if (email !== null && deps.resolveAccountForEmail !== undefined) {
-        return deps.resolveAccountForEmail(email, deps.getOpPath(), signal)
+function withAccount(args: readonly string[], account: string | undefined): string[] {
+    if (account === undefined || account.trim() === "") {
+        return [...args]
     }
 
-    const subdir = getEnvVar(merged, ACCOUNT_GIT_CONFIG_VAR)
-    if (subdir !== null && deps.resolveAccountForGitConfig !== undefined) {
-        return deps.resolveAccountForGitConfig(subdir, deps.getOpPath(), signal)
-    }
-
-    return null
+    const result = ["--account", account, ...args]
+    return result
 }
 ```
 
-The `try/catch` wrappers that call `deps.showError` and `return undefined` stay
-in `resolveLaunchConfig` around the single call to `resolveAccountId`.
+Verify against the actual `op` CLI that global-flag placement works for all
+call sites (`account list`, `item list`, `item get`).
 
 ---
 
-## 3. `resolveLaunchConfig.ts` — `deps.getOpPath()` called multiple times
+## 4. `resolverCache.ts` — return expressions violate project style rule
 
-**Current state.** `deps.getOpPath()` is invoked up to four times in one
-execution:
+**Current state.** Every exported function returns directly from an expression:
 
 ```typescript
-accountId = await deps.resolveAccountForEmail(email, deps.getOpPath(), signal)
-// …
-accountId = await deps.resolveAccountForGitConfig(gitSubdir, deps.getOpPath(), signal)
-// …
-serviceAccountToken = await deps.resolveTokenForTag(tokenTag, deps.getOpPath(), signal, …)
-// …
-resolved = await deps.runner.resolve(missing, deps.getOpPath(), signal, …)
+export function getCachedResolvedRef(cache, opRef) {
+    return cache.get(RESOLVED_REF_PREFIX + opRef)
+}
+
+function accountKey(email: string): string {
+    return ACCOUNT_PREFIX + email.toLowerCase()
+}
 ```
 
-**Problem.** Each call re-reads VS Code configuration. While cheap, it means the
-`opPath` could theoretically change between calls during a long resolution.
-It also obscures where the path comes from.
+**Problem.** The project rule states: "MUST not use return statements with
+expressions or method calls, but create a local variable instead."
 
-**Suggestion.** Read it once at the top of `resolveLaunchConfig`:
+**Suggestion.** Introduce a local variable at each return site:
+
+```typescript
+export function getCachedResolvedRef(cache: SecretCache, opRef: string): string | undefined {
+    const result = cache.get(RESOLVED_REF_PREFIX + opRef)
+    return result
+}
+
+function accountKey(email: string): string {
+    const key = ACCOUNT_PREFIX + email.toLowerCase()
+    return key
+}
+```
+
+---
+
+## 5. `sessionConfig.ts` — return expressions + duplicated `SIGNAL_NAMES`
+
+**Current state.**
+
+`buildSessionConfig` and `parseSessionConfig` both return object literals
+directly:
+
+```typescript
+return {
+    steps,
+    ...(tokenTag !== undefined ? { tokenTag } : {}),
+    ...(accountId !== undefined ? { accountId } : {}),
+}
+```
+
+Additionally, `sessionConfig.ts` declares its own private `SIGNAL_NAMES` set
+(line 80) that is identical to the private one in `envHelpers.ts`. Neither file
+exports the set, so each file carries its own copy.
+
+**Suggestion.** Apply the return-variable rule to the object literals:
+
+```typescript
+const config = {
+    steps,
+    ...(tokenTag !== undefined ? { tokenTag } : {}),
+    ...(accountId !== undefined ? { accountId } : {}),
+}
+return config
+```
+
+For `SIGNAL_NAMES`, export it from `envHelpers.ts` (it is already the
+authoritative source for `SignalName`) and import it in `sessionConfig.ts`:
+
+```typescript
+// envHelpers.ts
+export const SIGNAL_NAMES: ReadonlySet<SignalName> = new Set(["TERM", "KILL", "INT", "HUP"])
+
+// sessionConfig.ts
+import { SIGNAL_NAMES } from "./envHelpers"
+```
+
+---
+
+## 6. `resolveLaunchConfig.ts` — `MODE_VAR` read inline; inconsistent with other vars
+
+**Current state.**
+
+```typescript
+const modeValue = mergedEnv[MODE_VAR]
+const mode = parseSecretResolverMode(
+    typeof modeValue === "string" ? modeValue : null,
+    deps.showWarning,
+)
+```
+
+Every other env-var read in `parseLaunchOptions` uses `getTrimmedEnvValue`,
+but `MODE_VAR` is read with a one-off inline pattern.
+
+**Problem.** Minor inconsistency that will confuse a reader who scans the
+function and expects a uniform pattern.
+
+**Suggestion.** Use `getTrimmedEnvValue` directly:
+
+```typescript
+const mode = parseSecretResolverMode(
+    getTrimmedEnvValue(mergedEnv, MODE_VAR),
+    deps.showWarning,
+)
+```
+
+`parseSecretResolverMode` already handles `null` (and empty strings via
+trimming), so the result is identical.
+
+---
+
+## 7. `resolveLaunchConfig.ts` — `deps.getOpPath()` called multiple times
+
+**Current state.** `deps.getOpPath()` is called at each of the three
+resolution sites: inside `resolveLaunchAccount` (up to twice for the email and
+git-config paths), inside `resolveLaunchToken`, and inside `resolveAllRefs`.
+
+**Problem.** Each call re-reads VS Code configuration. Cheap but inconsistent:
+the path could theoretically change between calls mid-launch. It also makes the
+data flow opaque — a reader can't see "what `opPath` does this launch use?"
+from the top-level function.
+
+**Suggestion.** Read `opPath` once at the start of `resolveLaunchConfig` and
+pass it down:
 
 ```typescript
 const opPath = deps.getOpPath()
@@ -120,131 +262,70 @@ const opPath = deps.getOpPath()
 
 ---
 
-## 4. `resolveLaunchConfig.ts` — `attachSessionConfig` is a dense boolean
-
-**Current state.**
-
-```typescript
-const attachSessionConfig = (signalOnStop !== null || (tokenTag !== null && useOpRun) || accountId !== null)
-    && TERMINAL_CONSOLES.has(consoleKind)
-```
-
-**Problem.** Combining three unrelated conditions in a single expression makes
-it hard to reason about which feature triggers the attachment.
-
-**Suggestion.** Build the session config unconditionally and only attach if it
-carries anything useful:
-
-```typescript
-function buildSessionConfig(
-    signalOnStop: SignalStep[] | null,
-    tokenTag: string | null,
-    useOpRun: boolean,
-    accountId: string | null,
-): SecretResolverSessionConfig | null {
-    const steps = signalOnStop ?? []
-    const hasTokenTag = tokenTag !== null && useOpRun
-    const hasAccount = accountId !== null
-    if (steps.length === 0 && !hasTokenTag && !hasAccount) return null
-
-    return {
-        steps,
-        ...(hasTokenTag ? { tokenTag: tokenTag! } : {}),
-        ...(hasAccount ? { accountId: accountId! } : {}),
-    }
-}
-```
-
-Then in `resolveLaunchConfig`:
-
-```typescript
-if (TERMINAL_CONSOLES.has(consoleKind)) {
-    const sessionConfig = buildSessionConfig(signalOnStop, tokenTag, useOpRun, accountId)
-    if (sessionConfig !== null) {
-        ;(next as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] = sessionConfig
-    }
-}
-```
-
----
-
-## 5. `resolveLaunchConfig.ts` — `SIGNAL_ON_STOP_VAR` read after final env is built
-
-**Current state.** `parseSignalOnStop` is called at the very end of the
-function, after `finalEnv` and `next` have already been constructed:
-
-```typescript
-const next: vscode.DebugConfiguration = { ...config, env: finalEnv }
-// …
-const signalOnStop = parseSignalOnStop(
-    typeof merged[SIGNAL_ON_STOP_VAR] === "string"
-        ? (merged[SIGNAL_ON_STOP_VAR] as string)
-        : null,
-)
-```
-
-**Problem.** All reads from `merged` (mode, console kind, token tag, account
-id, signal-on-stop) should happen in one place at the top of the function. The
-current ordering implies `signalOnStop` depends on `finalEnv`, which it does
-not.
-
-**Suggestion.** Move the `parseSignalOnStop` call to the "read all config from
-merged" block immediately after `stripped` is computed.
-
----
-
-## 6. `resolveLaunchConfig.ts` — non-string `env` map passes through silently
+## 8. `resolveLaunchConfig.ts` — non-string env map is silently ignored
 
 **Current state.**
 
 ```typescript
 if (inlineEnv !== undefined && !isStringEnvMap(inlineEnv)) {
-    return config
+    return { kind: "unchanged" }
 }
 ```
 
-**Problem.** Adapters like `cppdbg` use `environment: Array<{name,value}>` instead
-of a string map. The extension silently does nothing for these, which is correct
-behaviour — but a user who adds `SECRET_RESOLVER_MODE` to a cppdbg launch and
-wonders why nothing happens gets no feedback.
+**Problem.** An adapter like `cppdbg` uses `environment: [{name, value}]`
+instead of a string map. If a user adds `SECRET_RESOLVER_MODE` or `op://` refs
+to such a launch, they get no feedback when the extension silently no-ops.
 
-**Suggestion.** Add a warning if the env contains op-refs but the shape is wrong:
+**Suggestion.** Emit a warning when the env has op-refs but is the wrong shape:
 
 ```typescript
 if (inlineEnv !== undefined && !isStringEnvMap(inlineEnv)) {
-    if (hasOpRef(inlineEnv as Record<string, unknown>)) {
+    if (hasOpRef(inlineEnv as EnvMap)) {
         deps.showWarning(
             "Secret Resolver: env is not a string map (e.g. cppdbg array shape) — op:// refs will not be resolved.",
         )
     }
-    return config
+    return { kind: "unchanged" }
 }
 ```
 
 ---
 
-## 7. `resolveLaunchConfig.ts` — `null` / `undefined` boundary crossing
+## 9. `resolveLaunchConfig.ts` — `ResolveDeps` optional methods add defensive guards
 
-**Current state.** `accountId` and `tokenTag` are `string | null` inside
-`resolveLaunchConfig`, but `SecretResolverSessionConfig` and the called helpers
-use `string | undefined`. This causes:
+**Current state.**
 
 ```typescript
-accountId ?? undefined   // appears multiple times
+resolveTokenForTag?: (…) => Promise<string>
+resolveAccountForEmail?: (…) => Promise<string>
+resolveAccountForGitConfig?: (…) => Promise<string>
 ```
 
-**Problem.** The null-vs-undefined split adds noise. The TypeScript type system
-provides no safety benefit if you have to escape it at every call site.
+Every call site must check `deps.xxx !== undefined`. In practice
+`configProvider.ts` always provides all three; the optionality exists only to
+ease test setup.
 
-**Suggestion.** Pick one convention throughout the file. Since `null` is the
-project-wide convention for "currently unavailable", keep `null` internally and
-convert to `undefined` only at the boundary in `buildSessionConfig` (or wherever
-`SecretResolverSessionConfig` is assembled). This consolidates the conversion
-to one place rather than scattering `?? undefined` everywhere.
+**Suggestion.** Make the fields required and export a test-helper factory:
+
+```typescript
+export function makeTestDeps(overrides: Partial<ResolveDeps>): ResolveDeps {
+    const missing = (): Promise<never> =>
+        Promise.reject(new Error("not wired in test"))
+    return {
+        resolveTokenForTag: missing,
+        resolveAccountForEmail: missing,
+        resolveAccountForGitConfig: missing,
+        ...overrides,
+    }
+}
+```
+
+Making the fields required removes all `if (deps.xxx !== undefined)` guards
+and makes the contract explicit.
 
 ---
 
-## 8. `accountResolver.ts` — `getGitEmail` receives the `.git` dir, not the working tree
+## 10. `accountResolver.ts` — `getGitEmail` receives the `.git` dir not the working tree
 
 **Current state.**
 
@@ -252,82 +333,66 @@ to one place rather than scattering `?? undefined` everywhere.
 const workDir = path.resolve(workspacePath ?? ".", subdir)
 const gitDir = path.join(workDir, ".git")
 // …
-email = await getGitEmail(gitDir, signal)   // passes workDir/.git
+email = await getGitEmail(gitDir, signal)  // ← passes workDir/.git
 ```
 
-Inside `getGitEmail`:
+Inside `getGitEmail` this becomes `git -C /path/to/repo/.git config --get user.email`.
 
-```typescript
-;({ stdout } = await execFileAsync(
-    "git",
-    ["-C", cwd, "config", "--get", "user.email"],
-    …
-))
-```
+**Problem.** `git -C` expects a working-tree directory. While git is often
+forgiving about running inside `.git`, passing the work tree root is correct
+and unambiguous. The `.git` path is useful only as the cache key (stable across
+subdir aliases), not as the cwd.
 
-**Problem.** `git -C /path/to/repo/.git config …` changes into the `.git`
-directory before running. While git is often forgiving about this (it can
-discover the work tree from inside `.git`), passing the working-tree root is
-the correct and unambiguous invocation. The `.git` path is useful only as a
-**cache key** (it's stable even if the subdir is `.`), not as the cwd.
-
-**Suggestion.** Pass `workDir` to `getGitEmail`, and keep `gitDir` solely as
+**Suggestion.** Pass `workDir` to `getGitEmail` and keep `gitDir` solely for
 the cache key:
 
 ```typescript
-const cachedEmail = gitEmailStore?.get(gitDir)
-if (cachedEmail !== undefined) {
-    email = cachedEmail
-}
-else {
-    email = await getGitEmail(workDir, signal)   // ← repo root, not .git dir
-    gitEmailStore?.set(gitDir, email)
-}
+email = await getGitEmail(workDir, signal)  // repo root, not .git dir
+gitEmailStore?.set(gitDir, email)           // cache key stays .git-relative
 ```
 
 ---
 
-## 9. `opInject.ts` — two error normalizers look identical but differ subtly
-
-**Current state.** `normalizeOpCliError` (exported, used by `accountResolver`
-and `tokenResolver`) and `normalizeError` (private, used by
-`DefaultOpInjectRunner`) look nearly identical. The key differences are:
-
-| | `normalizeOpCliError` | `normalizeError` |
-|---|---|---|
-| AbortError | re-thrown as-is | wrapped in `OpInjectAbortedError` |
-| non-zero exit prefix | `"op failed:"` | `"op inject failed:"` |
-
-**Problem.** A reader who sees two nearly-identical functions assumes one is a
-duplicate of the other and that only one should exist. The meaningful
-differences are not obvious without careful diffing.
-
-**Suggestion.** Add a brief comment to each function explaining why it is
-distinct from the other:
-
-```typescript
-/**
- * Normalizes op CLI errors for account/token resolution callers.
- * Re-throws AbortError as-is so callers can detect cancellation via
- * AbortSignal. Contrast with `normalizeError` below, which wraps AbortError
- * in `OpInjectAbortedError` for the inject runner's callers.
- */
-export function normalizeOpCliError(err: unknown, opPath: string): Error { … }
-
-/**
- * Normalizes op CLI errors for `DefaultOpInjectRunner`. Wraps AbortError in
- * `OpInjectAbortedError` so `resolveLaunchConfig` can distinguish
- * cancellation from other failures without depending on the AbortSignal.
- * Contrast with `normalizeOpCliError` above.
- */
-function normalizeError(err: unknown, opPath: string): Error { … }
-```
-
----
-
-## 10. `debugAdapterProxy.ts` — `SecretDebugAdapterTrackerFactory` has six positional parameters
+## 11. `configProvider.ts` — `_folder` used despite underscore prefix
 
 **Current state.**
+
+```typescript
+async resolveDebugConfigurationWithSubstitutedVariables(
+    _folder: vscode.WorkspaceFolder | undefined,
+    …
+): … {
+    // …
+    resolveAccountForGitConfig: (subdir, opPath, signal) =>
+        resolveAccountForGitConfig(…, _folder?.uri.fsPath, …),
+```
+
+**Problem.** The underscore prefix conventionally marks a parameter as unused.
+Here it is actively used. Readers and linters treat it as unused.
+
+**Suggestion.** Rename to `folder`.
+
+---
+
+## 12. `debugAdapterProxy.ts` — `SecretDebugAdapterTrackerFactory` has six positional parameters
+
+**Current state.**
+
+```typescript
+export class SecretDebugAdapterTrackerFactory {
+    constructor(
+        private readonly registry: TempDirRegistry,
+        private readonly kill: KillFn = …,
+        private readonly setKillTimer: … = setTimeout,
+        private readonly clearKillTimer: … = clearTimeout,
+        private readonly getProcessTree: … = defaultGetProcessTree,
+        private readonly getServiceAccountToken: … = () => undefined,
+    ) {}
+}
+```
+
+The call site in `extension.ts` passes only `registry` and
+`getServiceAccountToken`, but must pass them positionally:
 
 ```typescript
 new SecretDebugAdapterTrackerFactory(
@@ -335,17 +400,15 @@ new SecretDebugAdapterTrackerFactory(
     (pid, sig) => { process.kill(pid, sig) },
     setTimeout,
     clearTimeout,
-    undefined,          // ← placeholder for getProcessTree
+    undefined,
     (tag) => getCachedToken(cache, tag),
 )
 ```
 
-**Problem.** Six positional parameters with one `undefined` placeholder is
-fragile: adding or reordering parameters silently breaks call sites. The
-`undefined` also hides that a default is being accepted.
+**Problem.** Six positional parameters with an `undefined` placeholder in the
+middle is fragile. Adding or reordering parameters breaks call sites silently.
 
-**Suggestion.** Replace positional injection parameters 2–6 with an options
-object:
+**Suggestion.** Replace parameters 2–6 with an options object:
 
 ```typescript
 interface TrackerFactoryOptions {
@@ -356,16 +419,15 @@ interface TrackerFactoryOptions {
     getServiceAccountToken?: (tag: string) => string | undefined
 }
 
-export class SecretDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFactory {
+export class SecretDebugAdapterTrackerFactory {
     constructor(
         private readonly registry: TempDirRegistry,
         private readonly options: TrackerFactoryOptions = {},
     ) {}
-    // …
 }
 ```
 
-The call site in `extension.ts` becomes self-documenting:
+`extension.ts` becomes self-documenting:
 
 ```typescript
 new SecretDebugAdapterTrackerFactory(registry, {
@@ -375,99 +437,34 @@ new SecretDebugAdapterTrackerFactory(registry, {
 
 ---
 
-## 11. `debugAdapterProxy.ts` — `onDidSendMessage` handles two unrelated concerns
+## 13. `opInject.ts` — two normalizers look identical but differ subtly
 
-**Current state.** The method:
-1. Checks for a DAP `exited` event and cancels the pending kill timer.
-2. Checks for a `runInTerminal` request and rewrites it (env file, PID file, args).
+**Current state.** `normalizeOpCliError` (exported) and `normalizeError`
+(private) look nearly identical but differ in two important ways:
 
-**Problem.** Two distinct responsibilities in one method make it harder to read
-and test each behaviour independently.
+| Behavior     | `normalizeOpCliError` | `normalizeError`                  |
+| ------------ | --------------------- | --------------------------------- |
+| AbortError   | re-thrown as-is       | wrapped in `OpInjectAbortedError` |
+| error prefix | `"op failed:"`        | `"op inject failed:"`             |
 
-**Suggestion.** Extract private methods:
+**Problem.** A reader who sees two near-identical functions assumes one is a
+leftover and can be deleted. The meaningful differences are not visible without
+careful diffing.
 
-```typescript
-onDidSendMessage(message: unknown): void {
-    this.handleExitedEvent(message)
-    this.handleRunInTerminalRequest(message)
-}
-
-private handleExitedEvent(message: unknown): void {
-    if (isDapEvent(message, "exited")) {
-        this.programExited = true
-        this.cancelPendingKill()
-    }
-}
-
-private handleRunInTerminalRequest(message: unknown): void {
-    if (!isRunInTerminalRequest(message)) return
-    // … existing rewrite logic …
-}
-```
+**Suggestion.** Add a short comment to each explaining why it exists
+separately from the other. One line per function is sufficient.
 
 ---
 
-## 12. `debugAdapterProxy.ts` — informational `showInformationMessage` calls are noisy
+## 14. `extension.ts` — `signalHandlersInstalled` not explained
 
-**Current state.**
+**Current state.** `let signalHandlersInstalled = false` sits at module scope,
+separately from `ExtensionState`.
 
-```typescript
-void vscode.window.showInformationMessage(`Launched process has PID ${pid}`)
-// …
-void vscode.window.showInformationMessage(`Sent ${signal} to PID ${target.pid}`)
-```
+**Problem.** It looks like it was missed in the grouping refactor. A reader may
+wonder why it is not part of `ExtensionState`.
 
-**Problem.** These appear as notification toasts in VS Code's UI on every
-debug session start and on every signal step. Most users will find them
-distracting once the feature is known to work.
-
-**Suggestion.** Replace with `console.log` (which writes to the extension host
-output channel, visible in *Output → Secret Resolver* if you register one, or
-in the developer console). Reserve `showInformationMessage` for events users
-need to act on. The warning messages (`showWarningMessage`) for "no children to
-signal" are appropriate and should stay.
-
----
-
-## 13. `configProvider.ts` — `_folder` is used despite the underscore prefix
-
-**Current state.**
-
-```typescript
-async resolveDebugConfigurationWithSubstitutedVariables(
-    _folder: vscode.WorkspaceFolder | undefined,
-    …
-): Promise<…> {
-    // …
-    resolveAccountForGitConfig: (subdir, opPath, signal) =>
-        resolveAccountForGitConfig(subdir, opPath, this.#cache, signal, _folder?.uri.fsPath, …),
-```
-
-**Problem.** The `_` prefix conventionally signals "unused". Readers and linters
-treat it that way. A reader may incorrectly conclude `_folder` is a no-op or may
-suppress a "used" diagnostic with it.
-
-**Suggestion.** Rename to `folder`:
-
-```typescript
-async resolveDebugConfigurationWithSubstitutedVariables(
-    folder: vscode.WorkspaceFolder | undefined,
-    …
-```
-
----
-
-## 14. `extension.ts` — `signalHandlersInstalled` is module-level state outside `ExtensionState`
-
-**Current state.** `let signalHandlersInstalled = false` sits at module scope
-separately from the newly-grouped `state`.
-
-**Problem.** Minor inconsistency — it's the same category of module-level
-mutable state but was left out of the grouping refactor. It doesn't belong in
-`ExtensionState` (process handlers are truly per-process, not per-activation),
-but a comment would clarify this.
-
-**Suggestion.** Add a brief comment:
+**Suggestion.** Add a one-line comment:
 
 ```typescript
 // Process-level flag; separate from ExtensionState because signal handlers
@@ -477,7 +474,7 @@ let signalHandlersInstalled = false
 
 ---
 
-## 15. `tempDirRegistry.ts` — `drain` duplicates the spread in `snapshot`
+## 15. `tempDirRegistry.ts` — `drain` duplicates the spread from `snapshot`
 
 **Current state.**
 
@@ -494,9 +491,6 @@ drain(): string[] {
 }
 ```
 
-**Problem.** Minor duplication; if the collection type changes, both methods
-need updating.
-
 **Suggestion.** Have `drain` call `snapshot`:
 
 ```typescript
@@ -509,64 +503,25 @@ drain(): string[] {
 
 ---
 
-## 16. `resolveLaunchConfig.ts` — `ResolveDeps` optional methods create defensive checks
-
-**Current state.** Three of the six `ResolveDeps` fields are optional:
-
-```typescript
-resolveTokenForTag?: (…) => Promise<string>
-resolveAccountForEmail?: (…) => Promise<string>
-resolveAccountForGitConfig?: (…) => Promise<string>
-```
-
-**Problem.** Every call site must guard `if (deps.xxx !== undefined)`. In
-practice `configProvider.ts` always provides all three; the optional
-declaration exists only to simplify test setup.
-
-**Suggestion.** Provide no-op defaults in the interface or use a helper:
-
-```typescript
-function noAccount(_: string, __: string): Promise<string> {
-    return Promise.resolve("")
-}
-
-// … or make them required and provide a helper for tests:
-export function makeTestDeps(overrides: Partial<ResolveDeps>): ResolveDeps {
-    return {
-        resolveTokenForTag: () => Promise.reject(new Error("not wired")),
-        resolveAccountForEmail: () => Promise.reject(new Error("not wired")),
-        resolveAccountForGitConfig: () => Promise.reject(new Error("not wired")),
-        ...overrides,
-    }
-}
-```
-
-Making the fields required eliminates all the `if (deps.xxx !== undefined)`
-guards in the resolver and makes the interface contract explicit.
-
----
-
-## 17. `dotenv.ts` — empty-string quoting is implicit
+## 16. `dotenv.ts` — empty-string quoting is implicit
 
 **Current state.**
 
 ```typescript
-function formatValue(value: string): string {
-    if (value.length > 0 && SAFE_UNQUOTED.test(value)) {
-        return value
-    }
-    // … double-quote path
+if (value.length > 0 && SAFE_UNQUOTED.test(value)) {
+    return value
 }
+// … falls through to double-quoted path
 ```
 
-**Problem.** An empty string `""` falls through to the quoted path and becomes
-`""`. This is correct for `op run --env-file`, but the reason the guard
-includes `value.length > 0` is not obvious.
+**Problem.** The `value.length > 0` guard is load-bearing: an empty string
+`""` must be written as `KEY=""` because `op run` rejects bare empty
+assignments (`KEY=`). But the reason for the guard is not obvious.
 
-**Suggestion.** Add a brief inline comment:
+**Suggestion.** Add a one-line comment:
 
 ```typescript
-// Empty values must be quoted; op run rejects bare empty assignments.
+// Empty values must be quoted; op run rejects bare KEY= assignments.
 if (value.length > 0 && SAFE_UNQUOTED.test(value)) {
 ```
 
@@ -574,22 +529,21 @@ if (value.length > 0 && SAFE_UNQUOTED.test(value)) {
 
 ## Summary table
 
-| # | File | Category | Effort |
-|---|---|---|---|
-| 1 | `resolveLaunchConfig.ts` | Extract `getEnvVar` helper | Small |
-| 2 | `resolveLaunchConfig.ts` | Extract `resolveAccountId` function | Medium |
-| 3 | `resolveLaunchConfig.ts` | Read `opPath` once | Trivial |
-| 4 | `resolveLaunchConfig.ts` | Extract `buildSessionConfig` | Small |
-| 5 | `resolveLaunchConfig.ts` | Move `parseSignalOnStop` call earlier | Trivial |
-| 6 | `resolveLaunchConfig.ts` | Warn on non-string env map with op-refs | Small |
-| 7 | `resolveLaunchConfig.ts` | Consolidate null/undefined conversion | Small |
-| 8 | `accountResolver.ts` | Pass `workDir` not `gitDir` to `getGitEmail` | Small |
-| 9 | `opInject.ts` | Document two normalizers' distinction | Trivial |
-| 10 | `debugAdapterProxy.ts` | Options object for factory constructor | Medium |
-| 11 | `debugAdapterProxy.ts` | Split `onDidSendMessage` into two methods | Small |
-| 12 | `debugAdapterProxy.ts` | Replace toast messages with console.log | Trivial |
-| 13 | `configProvider.ts` | Rename `_folder` → `folder` | Trivial |
-| 14 | `extension.ts` | Comment on `signalHandlersInstalled` | Trivial |
-| 15 | `tempDirRegistry.ts` | `drain` delegates to `snapshot` | Trivial |
-| 16 | `resolveLaunchConfig.ts` | Make `ResolveDeps` methods required | Medium |
-| 17 | `dotenv.ts` | Comment on empty-string quoting | Trivial |
+| #  | File                     | Category                                            | Effort  |
+| -- | ------------------------ | --------------------------------------------------- | ------- |
+| 1  | `resolveLaunchConfig.ts` | Align null/undefined semantics across tri-states    | Small   |
+| 2  | `stopSignalController.ts`| Inject `warn` callback; remove vscode dependency    | Small   |
+| 3  | `opCli.ts`               | Simplify `withAccount` to global-flag prepend       | Small   |
+| 4  | `resolverCache.ts`       | Return via local variable (style rule)              | Trivial |
+| 5  | `sessionConfig.ts`       | Return via local variable; export `SIGNAL_NAMES`    | Trivial |
+| 6  | `resolveLaunchConfig.ts` | Use `getTrimmedEnvValue` for `MODE_VAR`             | Trivial |
+| 7  | `resolveLaunchConfig.ts` | Read `opPath` once at top                           | Trivial |
+| 8  | `resolveLaunchConfig.ts` | Warn on non-string env map with op-refs             | Small   |
+| 9  | `resolveLaunchConfig.ts` | Make `ResolveDeps` methods required                 | Medium  |
+| 10 | `accountResolver.ts`     | Pass `workDir` not `gitDir` to `getGitEmail`        | Small   |
+| 11 | `configProvider.ts`      | Rename `_folder` → `folder`                         | Trivial |
+| 12 | `debugAdapterProxy.ts`   | Options object for factory constructor              | Medium  |
+| 13 | `opInject.ts`            | Document the two normalizers' distinction           | Trivial |
+| 14 | `extension.ts`           | Comment on `signalHandlersInstalled`                | Trivial |
+| 15 | `tempDirRegistry.ts`     | `drain` delegates to `snapshot`                     | Trivial |
+| 16 | `dotenv.ts`              | Comment on empty-string quoting                     | Trivial |

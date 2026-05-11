@@ -5,7 +5,7 @@ import * as path from "node:path"
 import type { DebugProtocol } from "@vscode/debugprotocol"
 import { formatDotenv } from "./dotenv"
 import type { StringEnvMap } from "./envHelpers"
-import { buildOpRunArgs } from "./launchRewrite"
+import { type OpRunner } from "./opRunner"
 import type { SecretResolverSessionConfig } from "./sessionConfig"
 
 export type ServiceAccountTokenProvider = (tag: string) => string | undefined
@@ -18,7 +18,7 @@ export class RunInTerminalEnvRewriter {
 
     rewrite(
         message: DebugProtocol.RunInTerminalRequest,
-        opPath: string,
+        runner: OpRunner,
         sessionConfig: SecretResolverSessionConfig | undefined,
     ): string | undefined {
         const stringEnv = toStringEnv(message.arguments.env)
@@ -57,12 +57,11 @@ export class RunInTerminalEnvRewriter {
                     { mode: 0o600 },
                 )
 
-                const innerArgs = buildOpRunArgs(opPath, envFilePath, message.arguments.args, accountId)
-                message.arguments.args = buildOpRunArgs(opPath, tokenEnvFilePath, innerArgs, accountId)
+                const innerArgs = runner.buildRunArgs(envFilePath, message.arguments.args, accountId)
+                message.arguments.args = runner.buildRunArgs(tokenEnvFilePath, innerArgs, accountId)
             }
             else {
-                message.arguments.args = buildOpRunArgs(
-                    opPath,
+                message.arguments.args = runner.buildRunArgs(
                     envFilePath,
                     message.arguments.args,
                     accountId,

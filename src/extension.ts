@@ -5,7 +5,7 @@ import { cleanupRegistry, InMemoryTempDirRegistry, sweepStaleTempDirs } from "./
 
 import type { GitEmailStore } from "./accountResolver"
 import { SecretDebugAdapterTrackerFactory } from "./debugAdapterProxy"
-import { getCachedToken } from "./resolverCache"
+import { getCachedToken } from "./tokenResolver"
 import { SecretCache } from "./secretCache"
 
 const CLEAR_CACHE_COMMAND = "secretResolver.clearCache"
@@ -37,16 +37,9 @@ export function activate(context: vscode.ExtensionContext): void {
         ),
         vscode.debug.registerDebugAdapterTrackerFactory(
             "*",
-            new SecretDebugAdapterTrackerFactory(
-                registry,
-                (pid, sig) => {
-                    process.kill(pid, sig)
-                },
-                setTimeout,
-                clearTimeout,
-                undefined,
-                (tag) => getCachedToken(cache, tag),
-            ),
+            new SecretDebugAdapterTrackerFactory(registry, {
+                getServiceAccountToken: (tag) => getCachedToken(cache, tag),
+            }),
         ),
         vscode.commands.registerCommand(CLEAR_CACHE_COMMAND, () => {
             cache.clear()

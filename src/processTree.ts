@@ -52,45 +52,113 @@ export function isOpRunCommand(command: string): boolean {
     return isOpRun
 }
 
+// ---------------------------------------------------------------------------
+// PsRunner
+// ---------------------------------------------------------------------------
+
 /**
- * Default `GetProcessTreeFn` — uses the `pidtree` package (with
- * `{ root: true, advanced: true }`) to enumerate `rootPid` plus its
- * descendant PIDs together with each entry's parent PID, then resolves
- * each PID to its command line (Linux: `/proc/<pid>/cmdline`; macOS / BSD:
- * a single `ps -p ...` call). Returns an empty array on any failure.
- * Errors are logged via `console.error`; the calling tracker treats
- * "empty tree" as a no-op.
+ * Wraps the BSD / macOS `ps` command to read command lines for a set of PIDs
+ * in one invocation.
  */
-export async function defaultGetProcessTree(
-    rootPid: number,
-): Promise<ProcessInfo[]> {
-    let entries: { pid: number; ppid: number }[]
+export class PsRunner {
+    constructor(readonly psPath: string = "ps") {}
 
-    try {
-        entries = await pidtree(rootPid, { root: true, advanced: true })
+    /**
+     * Returns a map of `pid → commandLine` for the given PIDs.
+     * Uses a single `ps -p <pid> ... -o pid=,command=` call.
+     * Returns an empty map on any failure (process already exited, etc.).
+     */
+    async getCommands(
+        pids: readonly number[],
+        signal?: AbortSignal,
+    ): Promise<Map<number, string>> {
+        const args: string[] = []
+
+        for (const pid of pids) {
+            args.push("-p", String(pid))
+        }
+
+        args.push("-o", "pid=,command=")
+
+        let stdout: string
+
+        try {
+            const result = await execFileAsync(this.psPath, args, {
+                timeout: 5_000,
+                ...(signal !== undefined ? { signal } : {}),
+            })
+            stdout = result.stdout
+        }
+        catch (err) {
+            console.error(
+                `[secret-resolver] ps lookup failed: ${(err as Error).message}`,
+            )
+            return new Map()
+        }
+
+        const out = new Map<number, string>()
+
+        for (const rawLine of stdout.split("\n")) {
+            const line = rawLine.trimStart()
+
+            if (line.length === 0) {
+                continue
+            }
+
+            const match = line.match(/^(\d+)\s+(.*)$/)
+
+            if (match === null) {
+                continue
+            }
+
+            out.set(Number(match[1]), match[2].trim())
+        }
+
+        return out
     }
-    catch (err) {
-        console.error(
-            `[secret-resolver] pidtree(${rootPid}) failed: ${(err as Error).message}`,
-        )
-        return []
+}
+
+// ---------------------------------------------------------------------------
+// createDefaultGetProcessTree
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a `GetProcessTreeFn` that uses the `pidtree` package to enumerate
+ * processes and `/proc/<pid>/cmdline` (Linux) or `psRunner` (macOS / BSD) to
+ * resolve command lines. Returns an empty array on any failure.
+ */
+export function createDefaultGetProcessTree(
+    psRunner: PsRunner = new PsRunner(),
+): GetProcessTreeFn {
+    return async (rootPid) => {
+        let entries: { pid: number; ppid: number }[]
+
+        try {
+            entries = await pidtree(rootPid, { root: true, advanced: true })
+        }
+        catch (err) {
+            console.error(
+                `[secret-resolver] pidtree(${rootPid}) failed: ${(err as Error).message}`,
+            )
+            return []
+        }
+
+        if (entries.length === 0) {
+            return []
+        }
+
+        const pids = entries.map((e) => e.pid)
+        const commandsByPid = process.platform === "linux"
+            ? await readCommandsFromProc(pids)
+            : await psRunner.getCommands(pids)
+
+        const result = entries.map((e) => ({
+            pid: e.pid,
+            ppid: e.ppid,
+            command: commandsByPid.get(e.pid) ?? "",
+        }))
+        return result
     }
-
-    if (entries.length === 0) {
-        return []
-    }
-
-    const pids = entries.map((e) => e.pid)
-    const commandsByPid = process.platform === "linux"
-        ? await readCommandsFromProc(pids)
-        : await readCommandsFromPs(pids)
-
-    const result = entries.map((e) => ({
-        pid: e.pid,
-        ppid: e.ppid,
-        command: commandsByPid.get(e.pid) ?? "",
-    }))
-    return result
 }
 
 async function readCommandsFromProc(
@@ -112,55 +180,6 @@ async function readCommandsFromProc(
         // /proc/<pid>/cmdline is NUL-separated, with a trailing NUL.
         const args = cmdline.split("\x00").filter((part) => part.length > 0)
         out.set(pid, args.join(" "))
-    }
-
-    return out
-}
-
-async function readCommandsFromPs(
-    pids: number[],
-): Promise<Map<number, string>> {
-    // BSD / macOS `ps` accepts repeated `-p <pid>` flags. Use one spawn for
-    // the entire list.
-    const args: string[] = []
-
-    for (const pid of pids) {
-        args.push("-p", String(pid))
-    }
-
-    args.push("-o", "pid=,command=")
-
-    let stdout: string
-
-    try {
-        const result = await execFileAsync("ps", args, {
-            timeout: 5_000,
-        })
-        stdout = result.stdout
-    }
-    catch (err) {
-        console.error(
-            `[secret-resolver] ps lookup failed: ${(err as Error).message}`,
-        )
-        return new Map()
-    }
-
-    const out = new Map<number, string>()
-
-    for (const rawLine of stdout.split("\n")) {
-        const line = rawLine.trimStart()
-
-        if (line.length === 0) {
-            continue
-        }
-
-        const match = line.match(/^(\d+)\s+(.*)$/)
-
-        if (match === null) {
-            continue
-        }
-
-        out.set(Number(match[1]), match[2].trim())
     }
 
     return out
