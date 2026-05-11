@@ -39,7 +39,8 @@ export class SecretCache {
             return undefined
         }
 
-        return this.#decrypt(blob)
+        const plaintext = this.#decrypt(blob)
+        return plaintext
     }
 
     /**
@@ -64,9 +65,10 @@ export class SecretCache {
     }
 
     #hashKey(opRef: string): string {
-        return createHmac("sha256", this.#sessionKey)
+        const hex = createHmac("sha256", this.#sessionKey)
             .update(opRef)
             .digest("hex")
+        return hex
     }
 
     #encrypt(plaintext: string): Buffer {
@@ -77,7 +79,8 @@ export class SecretCache {
             cipher.final(),
         ])
         const tag = cipher.getAuthTag()
-        return Buffer.concat([iv, tag, ciphertext])
+        const encrypted = Buffer.concat([iv, tag, ciphertext])
+        return encrypted
     }
 
     #decrypt(blob: Buffer): string {
@@ -86,9 +89,11 @@ export class SecretCache {
         const ciphertext = blob.subarray(IV_BYTES + TAG_BYTES)
         const decipher = createDecipheriv("aes-256-gcm", this.#sessionKey, iv)
         decipher.setAuthTag(tag)
-        return Buffer.concat([
+        const buf = Buffer.concat([
             decipher.update(ciphertext),
             decipher.final(),
-        ]).toString("utf8")
+        ])
+        const decrypted = buf.toString("utf8")
+        return decrypted
     }
 }

@@ -14,7 +14,7 @@ import {
     type TempDirRegistry,
 } from "../src/debugAdapterProxy"
 import { parseEnvFile } from "../src/dotenv"
-import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../src/resolveLaunchConfig"
+import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../src/sessionConfig"
 import { cleanupRegistry, InMemoryTempDirRegistry, sweepStaleTempDirs, TEMP_DIR_PREFIX } from "../src/tempDirRegistry"
 
 interface KillCall {

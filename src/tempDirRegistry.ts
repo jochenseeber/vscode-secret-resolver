@@ -24,7 +24,8 @@ export class InMemoryTempDirRegistry implements TempDirRegistry {
     }
 
     snapshot(): string[] {
-        return [...this.dirs]
+        const dirs = [...this.dirs]
+        return dirs
     }
 
     drain(): string[] {

@@ -7,6 +7,10 @@ export const OP_REF_PATTERN = /^op:\/\//
 
 const INTERNAL_VAR_PATTERN = /^SECRET_RESOLVER_/
 
+export const MODE_VAR = "SECRET_RESOLVER_MODE"
+
+export const SIGNAL_ON_STOP_VAR = "SECRET_RESOLVER_SIGNAL_ON_STOP"
+
 export const TOKEN_TAG_VAR = "SECRET_RESOLVER_TOKEN_TAG"
 
 export const ACCOUNT_ID_VAR = "SECRET_RESOLVER_ACCOUNT_ID"
@@ -17,6 +21,8 @@ export const ACCOUNT_GIT_CONFIG_VAR = "SECRET_RESOLVER_ACCOUNT_GIT_CONFIG"
 
 export type SecretResolverMode = "op" | "cache"
 
+export type WarningReporter = (message: string) => void
+
 export type EnvMap = Record<string, string | null | undefined>
 
 export type StringEnvMap = Record<string, string>
@@ -25,7 +31,8 @@ export type StringEnvMap = Record<string, string>
  * True when `value` is a non-null string that begins with `op://`.
  */
 export function isOpRef(value: string | null | undefined): value is string {
-    return typeof value === "string" && OP_REF_PATTERN.test(value)
+    const isRef = typeof value === "string" && OP_REF_PATTERN.test(value)
+    return isRef
 }
 
 /**
@@ -109,6 +116,7 @@ export function stripInternalEnvVars(env: EnvMap): EnvMap {
  */
 export function parseSecretResolverMode(
     value: string | null | undefined,
+    warn: WarningReporter = defaultWarningReporter,
 ): SecretResolverMode {
     if (typeof value === "string") {
         const normalized = value.trim().toLowerCase()
@@ -122,7 +130,7 @@ export function parseSecretResolverMode(
         }
 
         if (normalized !== "") {
-            console.warn(
+            warn(
                 `[secret-resolver] unknown SECRET_RESOLVER_MODE value ${JSON.stringify(value)}; defaulting to "cache"`,
             )
         }
@@ -155,6 +163,7 @@ const STEP_PATTERN = /^(?:([0-9]+):)?([a-zA-Z]+)$/
  */
 export function parseSignalOnStop(
     value: string | null | undefined,
+    warn: WarningReporter = defaultWarningReporter,
 ): SignalStep[] | null {
     if (typeof value !== "string") {
         return null
@@ -174,7 +183,7 @@ export function parseSignalOnStop(
         const match = STEP_PATTERN.exec(token)
 
         if (match === null) {
-            console.warn(
+            warn(
                 `[secret-resolver] invalid SECRET_RESOLVER_SIGNAL_ON_STOP token ${
                     JSON.stringify(token)
                 }; defaulting to off`,
@@ -186,7 +195,7 @@ export function parseSignalOnStop(
         const signalStr = match[2].toUpperCase() as SignalName
 
         if (!SIGNAL_NAMES.has(signalStr)) {
-            console.warn(
+            warn(
                 `[secret-resolver] unknown signal ${
                     JSON.stringify(signalStr)
                 } in SECRET_RESOLVER_SIGNAL_ON_STOP; defaulting to off`,
@@ -203,7 +212,12 @@ export function parseSignalOnStop(
         steps.push({ delaySec, signal: signalStr })
     }
 
-    return steps.length > 0 ? steps : null
+    const result = steps.length > 0 ? steps : null
+    return result
+}
+
+function defaultWarningReporter(message: string): void {
+    console.warn(message)
 }
 
 /**
@@ -215,5 +229,6 @@ export function mergeEnv(
     fileMap: StringEnvMap,
     inlineMap: EnvMap | undefined,
 ): EnvMap {
-    return { ...fileMap, ...(inlineMap ?? {}) }
+    const merged = { ...fileMap, ...(inlineMap ?? {}) }
+    return merged
 }

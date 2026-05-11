@@ -48,7 +48,8 @@ export function isOpRunCommand(command: string): boolean {
         ? argv0.slice(argv0.lastIndexOf("/") + 1)
         : argv0
 
-    return basename === "op" && argv1 === "run"
+    const isOpRun = basename === "op" && argv1 === "run"
+    return isOpRun
 }
 
 /**
@@ -84,11 +85,12 @@ export async function defaultGetProcessTree(
         ? await readCommandsFromProc(pids)
         : await readCommandsFromPs(pids)
 
-    return entries.map((e) => ({
+    const result = entries.map((e) => ({
         pid: e.pid,
         ppid: e.ppid,
         command: commandsByPid.get(e.pid) ?? "",
     }))
+    return result
 }
 
 async function readCommandsFromProc(
@@ -132,7 +134,7 @@ async function readCommandsFromPs(
 
     try {
         const result = await execFileAsync("ps", args, {
-            timeout: 5000,
+            timeout: 5_000,
         })
         stdout = result.stdout
     }

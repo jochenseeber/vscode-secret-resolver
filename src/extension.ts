@@ -1,17 +1,23 @@
 import * as vscode from "vscode"
 
-import type { GitEmailStore } from "./accountResolver"
 import { createDefaultProvider, createGitEmailStore } from "./configProvider"
-import { SecretDebugAdapterTrackerFactory } from "./debugAdapterProxy"
-import { SecretCache } from "./secretCache"
 import { cleanupRegistry, InMemoryTempDirRegistry, sweepStaleTempDirs } from "./tempDirRegistry"
+
+import type { GitEmailStore } from "./accountResolver"
+import { SecretDebugAdapterTrackerFactory } from "./debugAdapterProxy"
+import { getCachedToken } from "./resolverCache"
+import { SecretCache } from "./secretCache"
 
 const CLEAR_CACHE_COMMAND = "secretResolver.clearCache"
 const TERMINATION_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const
 
-let activeCache: SecretCache | undefined
-let activeRegistry: InMemoryTempDirRegistry | undefined
-let activeGitEmailStore: GitEmailStore | undefined
+interface ExtensionState {
+    cache: SecretCache
+    registry: InMemoryTempDirRegistry
+    gitEmailStore: GitEmailStore
+}
+
+let state: ExtensionState | undefined
 let signalHandlersInstalled = false
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -19,9 +25,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const registry = new InMemoryTempDirRegistry()
     const gitEmailStore = createGitEmailStore(context.workspaceState)
     gitEmailStore.clear()
-    activeCache = cache
-    activeRegistry = registry
-    activeGitEmailStore = gitEmailStore
+    state = { cache, registry, gitEmailStore }
 
     sweepStaleTempDirs()
     installProcessHandlers()
@@ -41,7 +45,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 setTimeout,
                 clearTimeout,
                 undefined,
-                (tag) => cache.get(`__token__:${tag}`),
+                (tag) => getCachedToken(cache, tag),
             ),
         ),
         vscode.commands.registerCommand(CLEAR_CACHE_COMMAND, () => {
@@ -61,15 +65,11 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-    activeCache?.clear()
-    activeCache = undefined
-
-    activeGitEmailStore?.clear()
-    activeGitEmailStore = undefined
-
-    if (activeRegistry !== undefined) {
-        cleanupRegistry(activeRegistry)
-        activeRegistry = undefined
+    if (state !== undefined) {
+        state.cache.clear()
+        state.gitEmailStore.clear()
+        cleanupRegistry(state.registry)
+        state = undefined
     }
 }
 
@@ -81,15 +81,15 @@ function installProcessHandlers(): void {
     signalHandlersInstalled = true
 
     process.on("exit", () => {
-        if (activeRegistry !== undefined) {
-            cleanupRegistry(activeRegistry)
+        if (state !== undefined) {
+            cleanupRegistry(state.registry)
         }
     })
 
     for (const signal of TERMINATION_SIGNALS) {
         process.on(signal, () => {
-            if (activeRegistry !== undefined) {
-                cleanupRegistry(activeRegistry)
+            if (state !== undefined) {
+                cleanupRegistry(state.registry)
             }
         })
     }

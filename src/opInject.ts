@@ -51,6 +51,42 @@ export class OpInjectAbortedError extends Error {
 }
 
 /**
+ * Normalizes a child-process error from an `op` CLI call into one of the
+ * typed error classes. AbortErrors are re-thrown as-is so callers can detect
+ * cancellation. Used by `accountResolver` and `tokenResolver`.
+ */
+export function normalizeOpCliError(err: unknown, opPath: string): Error {
+    if (typeof err !== "object" || err === null) {
+        return new OpInjectError(String(err), "", null)
+    }
+
+    const e = err as NodeJS.ErrnoException & {
+        stderr?: string | Buffer
+        code?: string | number
+    }
+
+    if (e.code === "ENOENT") {
+        return new OpCliNotFoundError(opPath)
+    }
+
+    if (e.name === "AbortError" || e.code === "ABORT_ERR") {
+        return e as Error
+    }
+
+    const stderr = e.stderr instanceof Buffer
+        ? e.stderr.toString("utf8")
+        : typeof e.stderr === "string"
+        ? e.stderr
+        : ""
+    const trimmed = stderr.trim()
+    const exitCode = typeof e.code === "number" ? e.code : null
+    const message = trimmed.length > 0
+        ? `op failed: ${trimmed}`
+        : `op failed: ${e.message}`
+    return new OpInjectError(message, stderr, exitCode)
+}
+
+/**
  * Resolves a list of `op://` references in one batched `op inject` call.
  * Returns a Map keyed by the original ref string. Each value is wrapped
  * between unique BEGIN/END markers so resolved values containing newlines
@@ -106,11 +142,12 @@ export class DefaultOpInjectRunner implements OpInjectRunner {
                 {
                     signal,
                     encoding: "utf8",
-                    maxBuffer: 64 * 1024 * 1024,
+                    maxBuffer: 64 * 1_024 * 1_024,
                     ...(env !== undefined ? { env } : {}),
                 },
             )
-            return parseOutput(stdout, refs, uuid)
+            const resolved = parseOutput(stdout, refs, uuid)
+            return resolved
         }
         catch (err) {
             throw normalizeError(err, opPath)
@@ -130,7 +167,8 @@ function buildTemplate(refs: readonly string[], uuid: string): string {
         lines.push(`__SR_${uuid}_END_${i}__`)
     }
 
-    return `${lines.join("\n")}\n`
+    const template = `${lines.join("\n")}\n`
+    return template
 }
 
 function parseOutput(

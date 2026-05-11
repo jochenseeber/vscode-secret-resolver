@@ -214,6 +214,13 @@ suite("parseSecretResolverMode", () => {
 
         assert.strictEqual(warnings.length, 3)
     })
+
+    test("uses injected warning reporter", () => {
+        const warnings: string[] = []
+        assert.strictEqual(parseSecretResolverMode("wat", (m) => warnings.push(m)), "cache")
+        assert.strictEqual(warnings.length, 1)
+        assert.match(warnings[0], /SECRET_RESOLVER_MODE/)
+    })
 })
 
 suite("mergeEnv", () => {
@@ -323,5 +330,12 @@ suite("parseSignalOnStop", () => {
         ])
         assert.deepStrictEqual(result, [null, null])
         assert.strictEqual(warnings.length, 2)
+    })
+
+    test("uses injected warning reporter", () => {
+        const warnings: string[] = []
+        assert.strictEqual(parseSignalOnStop("TERM+NOPE", (m) => warnings.push(m)), null)
+        assert.strictEqual(warnings.length, 1)
+        assert.match(warnings[0], /unknown signal/)
     })
 })

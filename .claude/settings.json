@@ -7,7 +7,8 @@
       "mcp__plugin_serena_serena__list_dir",
       "mcp__plugin_serena_serena__onboarding",
       "mcp__plugin_serena_serena__write_memory",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "mcp__plugin_serena_serena__get_symbols_overview"
     ]
   },
   "enabledPlugins": {
@@ -19,6 +20,14 @@
     "serena@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,
     "nx@nx-claude-plugins": true
+  },
+  "extraKnownMarketplaces": {
+    "nx-claude-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "nrwl/nx-ai-agents-config"
+      }
+    }
   },
   "sandbox": {
     "enabled": true,
@@ -62,14 +71,6 @@
         "~/Library/Caches/pnpm",
         "~/Library/pnpm/store"
       ]
-    }
-  },
-  "extraKnownMarketplaces": {
-    "nx-claude-plugins": {
-      "source": {
-        "source": "github",
-        "repo": "nrwl/nx-ai-agents-config"
-      }
     }
   }
 }

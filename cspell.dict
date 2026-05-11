@@ -1,5 +1,6 @@
 # Project-specific words, one per line (lowercase singular form)
 ciphertext
+cmdline
 cppdbg
 debuggee
 debugprotocol
@@ -7,6 +8,7 @@ direnv
 distros
 enoent
 envfile
+esac
 esbuild
 hmac
 hmac'd
@@ -14,6 +16,7 @@ jochen
 jochenseeber
 linecap
 linejoin
+malva
 nullglob
 openvsx
 opsec
@@ -22,6 +25,8 @@ pgid
 pid
 pids
 pidtree
+pipefail
+ppid
 resvg
 rsvg
 seeber
@@ -32,6 +37,7 @@ tmpfs
 unsandboxed
 vite
 vsce
+vscodeignore
 vsix
 vsrun
 worktree

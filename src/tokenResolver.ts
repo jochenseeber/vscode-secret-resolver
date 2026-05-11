@@ -1,10 +1,7 @@
-import { OpCliNotFoundError, OpInjectError } from "./opInject"
+import { getCachedToken as readCachedToken, setCachedToken } from "./resolverCache"
 
-import { execFile } from "node:child_process"
-import { promisify } from "node:util"
+import { OpCli } from "./opCli"
 import type { SecretCache } from "./secretCache"
-
-const execFileAsync = promisify(execFile)
 
 export class TokenNotFoundError extends Error {
     constructor(tag: string) {
@@ -22,11 +19,11 @@ export class TokenCredentialMissingError extends Error {
     }
 }
 
-const CACHE_KEY_PREFIX = "__token__:"
+export { getCachedToken } from "./resolverCache"
 
 /**
  * Resolves the service account token for `tag` by querying the 1Password CLI.
- * Caches the result under `__token__:<tag>` in `cache` so subsequent launches
+ * Caches the result in the token namespace of `cache` so subsequent launches
  * with the same tag skip the CLI calls. Throws on any failure.
  */
 export async function resolveTokenForTag(
@@ -36,59 +33,44 @@ export async function resolveTokenForTag(
     signal?: AbortSignal,
     account?: string,
 ): Promise<string> {
-    const cacheKey = CACHE_KEY_PREFIX + tag
-    const cached = cache.get(cacheKey)
+    const cached = readCachedToken(cache, tag)
 
     if (cached !== undefined) {
         return cached
     }
 
-    const itemId = await findItemIdForTag(tag, opPath, signal, account)
-    const token = await getCredentialField(itemId.id, itemId.vaultId, opPath, signal, account)
+    const opCli = new OpCli(opPath)
+    const itemId = await findItemIdForTag(tag, opCli, signal, account)
+    const token = await getCredentialField(itemId.id, itemId.vaultId, opCli, signal, account)
 
-    cache.set(cacheKey, token)
+    setCachedToken(cache, tag, token)
     return token
 }
 
 async function findItemIdForTag(
     tag: string,
-    opPath: string,
+    opCli: OpCli,
     signal: AbortSignal | undefined,
     account: string | undefined,
 ): Promise<{ id: string; vaultId: string }> {
-    let stdout: string
-    const childEnv: NodeJS.ProcessEnv = { ...process.env }
-    delete childEnv.OP_SERVICE_ACCOUNT_TOKEN
-
-    try {
-        ;({ stdout } = await execFileAsync(
-            opPath,
-            [
-                "item",
-                "list",
-                ...(account ? ["--account", account] : []),
-                "--tags",
-                tag,
-                "--categories",
-                "API Credential",
-                "--format",
-                "json",
-            ],
-            { signal, encoding: "utf8", env: childEnv },
-        ))
-    }
-    catch (err) {
-        throw normalizeExecError(err, opPath)
-    }
-
-    let items: Array<{ id?: string; vault?: { id?: string } }>
-
-    try {
-        items = JSON.parse(stdout) as Array<{ id?: string; vault?: { id?: string } }>
-    }
-    catch {
-        throw new OpInjectError("op item list returned non-JSON output", stdout, null)
-    }
+    const items = await opCli.execJson<Array<{ id?: string; vault?: { id?: string } }>>(
+        [
+            "item",
+            "list",
+            "--tags",
+            tag,
+            "--categories",
+            "API Credential",
+            "--format",
+            "json",
+        ],
+        {
+            signal,
+            account,
+            withoutServiceAccountToken: true,
+            parseErrorMessage: "op item list returned non-JSON output",
+        },
+    )
 
     if (!Array.isArray(items) || items.length === 0) {
         throw new TokenNotFoundError(tag)
@@ -102,52 +84,38 @@ async function findItemIdForTag(
         throw new TokenNotFoundError(tag)
     }
 
-    return { id, vaultId }
+    const itemRef = { id, vaultId }
+    return itemRef
 }
 
 async function getCredentialField(
     itemId: string,
     vaultId: string,
-    opPath: string,
+    opCli: OpCli,
     signal: AbortSignal | undefined,
     account: string | undefined,
 ): Promise<string> {
-    let stdout: string
-    const childEnv: NodeJS.ProcessEnv = { ...process.env }
-    delete childEnv.OP_SERVICE_ACCOUNT_TOKEN
-
-    try {
-        ;({ stdout } = await execFileAsync(
-            opPath,
-            [
-                "item",
-                "get",
-                itemId,
-                ...(account ? ["--account", account] : []),
-                "--vault",
-                vaultId,
-                "--fields",
-                "label=credential",
-                "--format",
-                "json",
-            ],
-            { signal, encoding: "utf8", env: childEnv },
-        ))
-    }
-    catch (err) {
-        throw normalizeExecError(err, opPath)
-    }
-
-    let fields: Array<{ value?: unknown }>
-
-    try {
-        const parsed = JSON.parse(stdout) as unknown
-        // op item get --fields returns an array when --format json is used.
-        fields = Array.isArray(parsed) ? (parsed as Array<{ value?: unknown }>) : [parsed as { value?: unknown }]
-    }
-    catch {
-        throw new OpInjectError("op item get returned non-JSON output", stdout, null)
-    }
+    const parsed = await opCli.execJson<unknown>(
+        [
+            "item",
+            "get",
+            itemId,
+            "--vault",
+            vaultId,
+            "--fields",
+            "label=credential",
+            "--format",
+            "json",
+        ],
+        {
+            signal,
+            account,
+            withoutServiceAccountToken: true,
+            parseErrorMessage: "op item get returned non-JSON output",
+        },
+    )
+    // op item get --fields returns an array when --format json is used.
+    const fields = Array.isArray(parsed) ? (parsed as Array<{ value?: unknown }>) : [parsed as { value?: unknown }]
 
     const value = fields[0]?.value
 
@@ -156,36 +124,4 @@ async function getCredentialField(
     }
 
     return value
-}
-
-function normalizeExecError(err: unknown, opPath: string): Error {
-    if (typeof err !== "object" || err === null) {
-        return new OpInjectError(String(err), "", null)
-    }
-
-    const e = err as NodeJS.ErrnoException & {
-        stderr?: string | Buffer
-        code?: string | number
-    }
-
-    if (e.code === "ENOENT") {
-        return new OpCliNotFoundError(opPath)
-    }
-
-    if (e.name === "AbortError" || e.code === "ABORT_ERR") {
-        // Re-throw as-is so callers can detect cancellation via the abort signal.
-        return e as Error
-    }
-
-    const stderr = e.stderr instanceof Buffer
-        ? e.stderr.toString("utf8")
-        : typeof e.stderr === "string"
-        ? e.stderr
-        : ""
-    const trimmed = stderr.trim()
-    const exitCode = typeof e.code === "number" ? e.code : null
-    const message = trimmed.length > 0
-        ? `op failed: ${trimmed}`
-        : `op failed: ${e.message}`
-    return new OpInjectError(message, stderr, exitCode)
 }

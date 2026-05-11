@@ -103,7 +103,8 @@ export function formatDotenv(env: StringEnvMap): string {
         lines.push(`${key}=${formatValue(value)}`)
     }
 
-    return lines.length > 0 ? `${lines.join("\n")}\n` : ""
+    const result = lines.length > 0 ? `${lines.join("\n")}\n` : ""
+    return result
 }
 
 function formatValue(value: string): string {
@@ -118,5 +119,6 @@ function formatValue(value: string): string {
         .replace(/\n/g, "\\n")
         .replace(/\r/g, "\\r")
 
-    return `"${escaped}"`
+    const quoted = `"${escaped}"`
+    return quoted
 }

@@ -1,14 +1,10 @@
 import * as assert from "node:assert"
 
-import type { StringEnvMap } from "../src/envHelpers"
+import { MODE_VAR, SIGNAL_ON_STOP_VAR, type StringEnvMap, TOKEN_TAG_VAR } from "../src/envHelpers"
 import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectRunner } from "../src/opInject"
-import {
-    type ResolveDeps,
-    resolveLaunchConfig,
-    SECRET_RESOLVER_CONFIG_FIELD,
-    type SecretResolverSessionConfig,
-} from "../src/resolveLaunchConfig"
+import { type ResolveDeps, resolveLaunchConfig } from "../src/resolveLaunchConfig"
 import { SecretCache } from "../src/secretCache"
+import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../src/sessionConfig"
 
 class FakeRunner implements OpInjectRunner {
     calls: string[][] = []
@@ -203,6 +199,30 @@ suite("resolveLaunchConfig", () => {
         assert.strictEqual(recorder.warnings.length, 1)
         assert.match(recorder.warnings[0], /envFile not found/)
         assert.strictEqual(recorder.errors.length, 0)
+    })
+
+    test("routes invalid parser values through launch warnings", async () => {
+        const { deps, recorder } = makeDeps({})
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                KEEP: "yes",
+                [MODE_VAR]: "wat",
+                [SIGNAL_ON_STOP_VAR]: "TERM+NOPE",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.deepStrictEqual(result?.env, { KEEP: "yes" })
+        assert.strictEqual(recorder.warnings.length, 2)
+        assert.match(recorder.warnings[0], /unknown SECRET_RESOLVER_MODE/)
+        assert.match(recorder.warnings[1], /unknown signal/)
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        )
     })
 
     test("op-run mode: terminal console + MODE=op leaves refs intact", async () => {
@@ -508,7 +528,9 @@ suite("resolveLaunchConfig", () => {
         const result = await resolveLaunchConfig(config, deps)
         assert.ok(result)
         assert.ok(!("SECRET_RESOLVER_ACCOUNT_EMAIL" in (result!.env as Record<string, unknown>)))
-        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as SecretResolverSessionConfig | undefined
+        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
+            | SecretResolverSessionConfig
+            | undefined
         assert.strictEqual(sessionConfig?.accountId, "acct-uuid-from-email")
     })
 
@@ -531,7 +553,9 @@ suite("resolveLaunchConfig", () => {
         assert.ok(result)
         assert.ok(!("SECRET_RESOLVER_ACCOUNT_GIT_CONFIG" in (result!.env as Record<string, unknown>)))
         assert.deepStrictEqual(gitConfigCalls, ["."])
-        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as SecretResolverSessionConfig | undefined
+        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
+            | SecretResolverSessionConfig
+            | undefined
         assert.strictEqual(sessionConfig?.accountId, "acct-uuid-from-git")
     })
 
@@ -577,7 +601,9 @@ suite("resolveLaunchConfig", () => {
         const result = await resolveLaunchConfig(config, deps)
         assert.ok(result)
         assert.strictEqual(gitConfigCalls.length, 0)
-        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as SecretResolverSessionConfig | undefined
+        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
+            | SecretResolverSessionConfig
+            | undefined
         assert.strictEqual(sessionConfig?.accountId, "acct-uuid-from-email")
     })
 
@@ -598,5 +624,32 @@ suite("resolveLaunchConfig", () => {
         assert.strictEqual(result, undefined)
         assert.strictEqual(recorder.errors.length, 1)
         assert.match(recorder.errors[0], /no matching 1Password account/)
+    })
+
+    test("does not resolve service account token when stripped env has no op refs", async () => {
+        let tokenCalls = 0
+        const { deps } = makeDeps({
+            resolveTokenForTag: async () => {
+                tokenCalls++
+                return "tok"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                [TOKEN_TAG_VAR]: "my-tag",
+            },
+        }
+        const result = await resolveLaunchConfig(config, deps)
+        assert.deepStrictEqual(result?.env, { FOO: "bar" })
+        assert.strictEqual(tokenCalls, 0)
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        )
     })
 })

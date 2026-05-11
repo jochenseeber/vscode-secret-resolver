@@ -2,13 +2,9 @@ import * as assert from "node:assert"
 
 import type { StringEnvMap } from "../src/envHelpers"
 import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectRunner } from "../src/opInject"
-import {
-    type ResolveDeps,
-    resolveLaunchConfig,
-    SECRET_RESOLVER_CONFIG_FIELD,
-    type SecretResolverSessionConfig,
-} from "../src/resolveLaunchConfig"
+import { type ResolveDeps, resolveLaunchConfig } from "../src/resolveLaunchConfig"
 import { SecretCache } from "../src/secretCache"
+import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../src/sessionConfig"
 
 class FakeRunner implements OpInjectRunner {
     calls: Array<{ refs: string[]; token: string | undefined; account: string | undefined }> = []
@@ -499,9 +495,13 @@ suite("resolveLaunchConfig", () => {
         )
     })
 
-    test("TOKEN_TAG_VAR is stripped from final env", async () => {
+    test("TOKEN_TAG_VAR is stripped from final env and ignored when no op refs are present", async () => {
+        let tokenCalls = 0
         const { deps } = makeDeps({
-            resolveTokenForTag: async () => "tok",
+            resolveTokenForTag: async () => {
+                tokenCalls++
+                return "tok"
+            },
         })
         const config = {
             type: "node",
@@ -516,6 +516,7 @@ suite("resolveLaunchConfig", () => {
         const result = await resolveLaunchConfig(config, deps)
         assert.ok(result)
         assert.ok(!("SECRET_RESOLVER_TOKEN_TAG" in (result!.env as Record<string, unknown>)))
+        assert.strictEqual(tokenCalls, 0)
     })
 
     test("token is passed as 4th arg to runner.resolve in cache mode", async () => {
@@ -552,7 +553,7 @@ suite("resolveLaunchConfig", () => {
             request: "launch",
             console: "integratedTerminal",
             env: {
-                FOO: "bar",
+                DB: "op://v/i/db",
                 SECRET_RESOLVER_TOKEN_TAG: "my-tag",
             },
         }
@@ -572,7 +573,7 @@ suite("resolveLaunchConfig", () => {
             request: "launch",
             console: "integratedTerminal",
             env: {
-                FOO: "bar",
+                DB: "op://v/i/db",
                 SECRET_RESOLVER_MODE: "op",
                 SECRET_RESOLVER_TOKEN_TAG: "my-tag",
             },
@@ -648,7 +649,7 @@ suite("resolveLaunchConfig", () => {
             request: "launch",
             console: "integratedTerminal",
             env: {
-                FOO: "bar",
+                DB: "op://v/i/db",
                 SECRET_RESOLVER_MODE: "op",
                 SECRET_RESOLVER_TOKEN_TAG: "my-tag",
                 SECRET_RESOLVER_SIGNAL_ON_STOP: "TERM+KILL",
@@ -686,7 +687,10 @@ suite("resolveLaunchConfig", () => {
 
     test("accountId is forwarded as 4th arg to resolveTokenForTag", async () => {
         const tokenTagCalls: Array<{ tag: string; account: string | undefined }> = []
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
         const { deps } = makeDeps({
+            runner,
             resolveTokenForTag: async (tag, _opPath, _signal, account) => {
                 tokenTagCalls.push({ tag, account })
                 return "tok"
@@ -698,7 +702,7 @@ suite("resolveLaunchConfig", () => {
             request: "launch",
             console: "integratedTerminal",
             env: {
-                FOO: "bar",
+                DB: "op://v/i/db",
                 SECRET_RESOLVER_TOKEN_TAG: "my-tag",
                 SECRET_RESOLVER_ACCOUNT_ID: "SOME_ACCOUNT_ID",
             },
@@ -792,7 +796,10 @@ suite("resolveLaunchConfig", () => {
 
     test("accountId resolved from email is forwarded to resolveTokenForTag", async () => {
         const tokenTagCalls: Array<{ tag: string; account: string | undefined }> = []
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
         const { deps } = makeDeps({
+            runner,
             resolveAccountForEmail: async () => "acct-uuid-from-email",
             resolveTokenForTag: async (tag, _opPath, _signal, account) => {
                 tokenTagCalls.push({ tag, account })
@@ -805,7 +812,7 @@ suite("resolveLaunchConfig", () => {
             request: "launch",
             console: "integratedTerminal",
             env: {
-                FOO: "bar",
+                DB: "op://v/i/db",
                 SECRET_RESOLVER_TOKEN_TAG: "my-tag",
                 SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
             },

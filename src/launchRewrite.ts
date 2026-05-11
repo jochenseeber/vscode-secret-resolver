@@ -13,9 +13,10 @@ export function isRunInTerminalRequest(
     }
 
     const m = message as Partial<DebugProtocol.RunInTerminalRequest>
-    return m.type === "request"
+    const isMatch = m.type === "request"
         && m.command === "runInTerminal"
         && Array.isArray(m.arguments?.args)
+    return isMatch
 }
 
 /**
@@ -30,7 +31,7 @@ export function buildOpRunArgs(
     args: readonly string[],
     account?: string,
 ): string[] {
-    return [
+    const result = [
         opPath,
         "run",
         ...(account !== undefined ? ["--account", account] : []),
@@ -38,4 +39,5 @@ export function buildOpRunArgs(
         "--",
         ...args,
     ]
+    return result
 }

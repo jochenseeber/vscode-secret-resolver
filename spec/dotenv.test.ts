@@ -33,11 +33,11 @@ suite("parseEnvFile", () => {
 
     test("strips matched double or single quotes", async () => {
         await withTempFile(
-            "DBL=\"hello world\"\nSGL='ello'\n",
+            "DBL=\"hello world\"\nSGL='ello'\n", // cspell:disable-line
             async (p) => {
                 assert.deepStrictEqual(await parseEnvFile(p), {
                     DBL: "hello world",
-                    SGL: "ello",
+                    SGL: "ello", // cspell:disable-line
                 })
             },
         )
@@ -146,8 +146,8 @@ suite("formatDotenv", () => {
 
     test("preserves unicode characters verbatim inside double quotes", () => {
         assert.strictEqual(
-            formatDotenv({ GREETING: "héllo 🌍" }),
-            "GREETING=\"héllo 🌍\"\n",
+            formatDotenv({ GREETING: "héllo 🌍" }), // cspell:disable-line
+            "GREETING=\"héllo 🌍\"\n", // cspell:disable-line
         )
     })
 

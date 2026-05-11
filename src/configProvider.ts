@@ -13,16 +13,26 @@ class WorkspaceStateGitEmailStore implements GitEmailStore {
     constructor(private readonly ws: vscode.Memento) {}
 
     get(dir: string): string | undefined {
-        return this.ws.get<Record<string, string>>(GIT_EMAILS_KEY)?.[dir]
+        const emails = this.ws.get<Record<string, string>>(GIT_EMAILS_KEY)
+        const email = emails?.[dir]
+        return email
     }
 
     set(dir: string, email: string): void {
         const current = this.ws.get<Record<string, string>>(GIT_EMAILS_KEY) ?? {}
-        void this.ws.update(GIT_EMAILS_KEY, { ...current, [dir]: email })
+        this.updateBestEffort({ ...current, [dir]: email })
     }
 
     clear(): void {
-        void this.ws.update(GIT_EMAILS_KEY, undefined)
+        this.updateBestEffort(undefined)
+    }
+
+    private updateBestEffort(value: Record<string, string> | undefined): void {
+        void this.ws.update(GIT_EMAILS_KEY, value).then(undefined, (err: unknown) => {
+            console.warn(
+                `[secret-resolver] failed to persist git email cache: ${(err as Error).message}`,
+            )
+        })
     }
 }
 
@@ -53,7 +63,7 @@ export class SecretDebugConfigurationProvider implements vscode.DebugConfigurati
         })
 
         try {
-            return await resolveLaunchConfig(
+            const resolved = await resolveLaunchConfig(
                 debugConfiguration,
                 {
                     cache: this.#cache,
@@ -85,6 +95,7 @@ export class SecretDebugConfigurationProvider implements vscode.DebugConfigurati
                 },
                 controller.signal,
             )
+            return resolved
         }
         finally {
             subscription?.dispose()
