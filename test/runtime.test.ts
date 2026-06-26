@@ -6,16 +6,12 @@ import * as path from "node:path"
 import * as vscode from "vscode"
 
 import { DebugProtocol } from "@vscode/debugprotocol"
-import {
-    type GetProcessTreeFn,
-    type KillFn,
-    type ProcessInfo,
-    SecretDebugAdapterTrackerFactory,
-    type TempDirRegistry,
-} from "../src/debugAdapterProxy"
-import { parseEnvFile } from "../src/dotenv"
+import { SecretDebugAdapterTrackerFactory } from "../src/debugAdapterProxy"
+import { DotenvFile } from "../src/dotenv"
+import type { ProcessFinder, ProcessTreeReader } from "../src/processTree"
 import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../src/sessionConfig"
-import { cleanupRegistry, InMemoryTempDirRegistry, sweepStaleTempDirs, TEMP_DIR_PREFIX } from "../src/tempDirRegistry"
+import type { ProcessController } from "../src/stopSignalController"
+import { InMemoryTempDirRegistry, TEMP_DIR_PREFIX, type TempDirRegistry } from "../src/tempDirRegistry"
 
 interface KillCall {
     pid: number
@@ -32,39 +28,62 @@ interface ScheduledTimer {
 function makeTrackerWithStubs(opts?: {
     registry?: TempDirRegistry
     sessionConfig?: SecretResolverSessionConfig
-    descendantsByRoot?: Map<number, ProcessInfo[]>
-    getServiceAccountToken?: (tag: string) => string | undefined
+    treeByRoot?: Map<number, number[]>
+    /** PID the stub `ProcessFinder` reports for any marker (default: null). */
+    pidByMarker?: number | null
 }): {
     tracker: vscode.DebugAdapterTracker | undefined
     kills: KillCall[]
     timers: ScheduledTimer[]
-    descendantsByRoot: Map<number, ProcessInfo[]>
+    treeByRoot: Map<number, number[]>
+    warnings: string[]
+    markerQueries: string[]
     fireTimer: (idx: number) => void
 } {
     const registry = opts?.registry ?? new InMemoryTempDirRegistry()
     const kills: KillCall[] = []
     const timers: ScheduledTimer[] = []
-    const descendantsByRoot = opts?.descendantsByRoot ?? new Map()
+    const warnings: string[] = []
+    const markerQueries: string[] = []
+    const treeByRoot = opts?.treeByRoot ?? new Map()
 
-    const kill: KillFn = (pid, signal) => {
-        kills.push({ pid, signal })
-    }
-
-    const setKillTimer = (cb: () => void, ms: number): NodeJS.Timeout => {
-        const id = {} as NodeJS.Timeout
-        timers.push({ id, cb, ms, canceled: false })
-        return id
-    }
-
-    const clearKillTimer = (handle: NodeJS.Timeout) => {
-        for (const t of timers) {
-            if (t.id === handle) {
-                t.canceled = true
+    const processController: ProcessController = {
+        kill: (pid, signal) => {
+            kills.push({ pid, signal })
+        },
+        setTimer: (cb: () => void, ms: number): NodeJS.Timeout => {
+            const id = {} as NodeJS.Timeout
+            timers.push({ id, cb, ms, canceled: false })
+            return id
+        },
+        clearTimer: (handle: NodeJS.Timeout) => {
+            for (const t of timers) {
+                if (t.id === handle) {
+                    t.canceled = true
+                }
             }
-        }
+        },
     }
 
-    const getDescendants: GetProcessTreeFn = async (root) => descendantsByRoot.get(root) ?? []
+    const processTreeReader: ProcessTreeReader = {
+        getProcessTree: async (root) => treeByRoot.get(root) ?? [],
+    }
+
+    const processFinder: ProcessFinder = {
+        findProcessIdByCommandLineMarker: async (marker) => {
+            markerQueries.push(marker)
+            return opts?.pidByMarker ?? null
+        },
+    }
+
+    const notifier = {
+        showError: (message: string) => {
+            warnings.push(message)
+        },
+        showWarning: (message: string) => {
+            warnings.push(message)
+        },
+    }
 
     const session = {
         configuration: {
@@ -72,11 +91,10 @@ function makeTrackerWithStubs(opts?: {
         },
     } as unknown as vscode.DebugSession
     const tracker = new SecretDebugAdapterTrackerFactory(registry, {
-        kill,
-        setKillTimer,
-        clearKillTimer,
-        getProcessTree: getDescendants,
-        getServiceAccountToken: opts?.getServiceAccountToken ?? (() => undefined),
+        processController,
+        processTreeReader,
+        processFinder,
+        notifier,
     }).createDebugAdapterTracker(session) as
         | vscode.DebugAdapterTracker
         | undefined
@@ -89,15 +107,16 @@ function makeTrackerWithStubs(opts?: {
         }
     }
 
-    return { tracker, kills, timers, descendantsByRoot, fireTimer }
+    return { tracker, kills, timers, treeByRoot, warnings, markerQueries, fireTimer }
 }
 
 function makeTracker(
     registry: TempDirRegistry = new InMemoryTempDirRegistry(),
+    configuration: Record<string, unknown> = {},
 ): vscode.DebugAdapterTracker | undefined {
     return new SecretDebugAdapterTrackerFactory(registry)
         .createDebugAdapterTracker({
-            configuration: {},
+            configuration,
         } as unknown as vscode.DebugSession) as
             | vscode.DebugAdapterTracker
             | undefined
@@ -146,36 +165,17 @@ function flush(): Promise<void> {
 }
 
 /**
- * Builds the standard wrapping topology: shell → op run → program(s).
- * The tree is what `getProcessTree(shellPid)` returns; the tracker walks
- * it, finds the `op run` wrapper, and signals its direct children.
+ * Builds the standard wrapping topology as a flat PID list: shell → op run →
+ * program(s). This is what `getProcessTree(shellPid)` returns (the root PID
+ * first, then descendants); the controller signals every PID except the
+ * captured root.
  */
 function makeWrappedTree(opts: {
     shellPid: number
     opPid: number
-    children: { pid: number; command: string }[]
-    shellCommand?: string
-    opCommand?: string
-}): ProcessInfo[] {
-    const tree: ProcessInfo[] = [
-        {
-            pid: opts.shellPid,
-            ppid: 1,
-            command: opts.shellCommand ?? "/bin/bash",
-        },
-        {
-            pid: opts.opPid,
-            ppid: opts.shellPid,
-            command: opts.opCommand
-                ?? "/opt/homebrew/bin/op run --env-file=/tmp/x -- java TestJavaLaunch",
-        },
-    ]
-
-    for (const child of opts.children) {
-        tree.push({ pid: child.pid, ppid: opts.opPid, command: child.command })
-    }
-
-    return tree
+    childPids: number[]
+}): number[] {
+    return [opts.shellPid, opts.opPid, ...opts.childPids]
 }
 
 function makeRequest(
@@ -209,7 +209,7 @@ function readEnvFileFromArgs(args: readonly string[]): {
     const flag = args.find((a) => a.startsWith("--env-file="))
     assert.ok(flag, "expected --env-file= argument")
     const envFilePath = flag.slice("--env-file=".length)
-    // The dotenv writer escapes special chars but parseEnvFile only strips
+    // The dotenv writer escapes special chars but the reader only strips
     // outer quotes. Tests pick values that round-trip cleanly through both.
     return { envFilePath, parsed: readDotenvSync(envFilePath) }
 }
@@ -242,7 +242,7 @@ function readDotenvSync(filePath: string): Record<string, string> {
 }
 
 suite("runtime integration", () => {
-    test("wraps env in op run --env-file when env has op:// refs (op-run mode)", async () => {
+    test("wraps env in op run --env-file when env has op:// refs", async () => {
         if (process.platform === "win32") {
             return
         }
@@ -279,7 +279,7 @@ suite("runtime integration", () => {
         assert.strictEqual(dirStat.mode & 0o777, 0o700)
 
         // cleanup so the registry sweep doesn't leave residue.
-        cleanupRegistry(registry)
+        registry.cleanup()
         assert.ok(!fs.existsSync(envFilePath))
     })
 
@@ -305,7 +305,7 @@ suite("runtime integration", () => {
         })
         assert.ok(!Object.values(parsed).some((v) => v.startsWith("op://")))
 
-        cleanupRegistry(registry)
+        registry.cleanup()
         assert.ok(!fs.existsSync(envFilePath))
     })
 
@@ -328,7 +328,7 @@ suite("runtime integration", () => {
         assert.strictEqual(args[1], "run")
         assert.ok(args[2].startsWith("--env-file="))
 
-        cleanupRegistry(registry)
+        registry.cleanup()
     })
 
     test("no-op when env is missing", () => {
@@ -375,7 +375,7 @@ suite("runtime integration", () => {
         assert.strictEqual(registry.snapshot().length, 0)
     })
 
-    test("no-op when env has only null values and no opRunEnv in sessionConfig", () => {
+    test("no-op when env has only null values and no launch env", () => {
         if (process.platform === "win32") {
             return
         }
@@ -389,6 +389,75 @@ suite("runtime integration", () => {
 
         assert.deepStrictEqual(message.arguments.args, argsBefore)
         assert.strictEqual(registry.snapshot().length, 0)
+    })
+
+    test("moves launch env vars into the env file even when the adapter does not forward them", () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const registry = new InMemoryTempDirRegistry()
+        const tracker = makeTracker(registry, {
+            env: { FROM_LAUNCH: "yes", SHARED: "launch-value" },
+        })
+        const message = makeRequest(["node", "app.js"], {
+            DAP_ONLY: "1",
+            SHARED: "adapter-value",
+        })
+
+        tracker?.onDidSendMessage?.(message)
+
+        const { parsed } = readEnvFileFromArgs(message.arguments.args)
+        assert.deepStrictEqual(parsed, {
+            FROM_LAUNCH: "yes",
+            SHARED: "adapter-value",
+            DAP_ONLY: "1",
+        })
+        assert.deepStrictEqual(message.arguments.env, {})
+
+        registry.cleanup()
+    })
+
+    test("wraps using only the launch env when the request env is empty", () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const registry = new InMemoryTempDirRegistry()
+        const tracker = makeTracker(registry, {
+            env: { FROM_LAUNCH: "yes" },
+        })
+        const message = makeRequest(["node", "app.js"], {})
+
+        tracker?.onDidSendMessage?.(message)
+
+        const args = message.arguments.args
+        assert.strictEqual(args[0], configuredOpPath())
+        assert.strictEqual(args[1], "run")
+
+        const { parsed } = readEnvFileFromArgs(args)
+        assert.deepStrictEqual(parsed, { FROM_LAUNCH: "yes" })
+
+        registry.cleanup()
+    })
+
+    test("null request env entries unset launch env vars", () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const registry = new InMemoryTempDirRegistry()
+        const tracker = makeTracker(registry, {
+            env: { DROP_ME: "x", KEEP: "y" },
+        })
+        const message = makeRequest(["node", "app.js"], { DROP_ME: null })
+
+        tracker?.onDidSendMessage?.(message)
+
+        const { parsed } = readEnvFileFromArgs(message.arguments.args)
+        assert.deepStrictEqual(parsed, { KEEP: "y" })
+
+        registry.cleanup()
     })
 
     test("ignores non-runInTerminal messages", () => {
@@ -475,7 +544,7 @@ suite("runtime integration", () => {
         assert.strictEqual(registry.snapshot().length, 0)
     })
 
-    test("cleanupRegistry removes any leftover dirs", () => {
+    test("registry.cleanup() removes any leftover dirs", () => {
         if (process.platform === "win32") {
             return
         }
@@ -489,7 +558,7 @@ suite("runtime integration", () => {
         const dir = path.dirname(envFilePath)
         assert.ok(fs.existsSync(dir))
 
-        cleanupRegistry(registry)
+        registry.cleanup()
 
         assert.ok(!fs.existsSync(dir))
         assert.strictEqual(registry.snapshot().length, 0)
@@ -508,7 +577,7 @@ suite("runtime integration", () => {
         })
         fs.writeFileSync(path.join(stale, "env"), "FOO=bar\n", { mode: 0o600 })
 
-        sweepStaleTempDirs()
+        InMemoryTempDirRegistry.sweepStale()
 
         assert.ok(!fs.existsSync(stale))
     })
@@ -526,7 +595,7 @@ suite("runtime integration", () => {
         fs.writeFileSync(path.join(live, "env"), "FOO=bar\n", { mode: 0o600 })
 
         try {
-            sweepStaleTempDirs()
+            InMemoryTempDirRegistry.sweepStale()
             assert.ok(fs.existsSync(live))
         }
         finally {
@@ -546,7 +615,7 @@ suite("runtime integration", () => {
         })
 
         try {
-            sweepStaleTempDirs()
+            InMemoryTempDirRegistry.sweepStale()
             assert.ok(fs.existsSync(orphan))
         }
         finally {
@@ -554,7 +623,7 @@ suite("runtime integration", () => {
         }
     })
 
-    test("formatDotenv output is parseable by parseEnvFile for safe values", async () => {
+    test("DotenvFile.format output is parseable by DotenvFile.parseFile for safe values", async () => {
         if (process.platform === "win32") {
             return
         }
@@ -569,13 +638,13 @@ suite("runtime integration", () => {
         tracker?.onDidSendMessage?.(message)
 
         const { envFilePath } = readEnvFileFromArgs(message.arguments.args)
-        const parsed = await parseEnvFile(envFilePath)
+        const parsed = await new DotenvFile(envFilePath).parseFile()
         assert.deepStrictEqual(parsed, {
             URL: "https://example.com/path",
             REF: "op://vault/item/url",
         })
 
-        cleanupRegistry(registry)
+        registry.cleanup()
     })
 
     test("signal-on-stop: sends SIGTERM to descendants on disconnect", async () => {
@@ -585,12 +654,12 @@ suite("runtime integration", () => {
 
         const { tracker, kills, timers } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 4242,
                 makeWrappedTree({
                     shellPid: 4242,
                     opPid: 8000,
-                    children: [{ pid: 9000, command: "java TestJavaLaunch" }],
+                    childPids: [9000],
                 }),
             ]]),
         })
@@ -603,39 +672,25 @@ suite("runtime integration", () => {
 
         await flush()
 
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }])
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGTERM" },
+        ])
         assert.strictEqual(timers.length, 0)
     })
 
-    test("signal-on-stop: signals only direct children of the op run wrapper", async () => {
+    test("signal-on-stop: signals every descendant of the captured root, not just op's direct children", async () => {
         if (process.platform === "win32") {
             return
         }
 
         const { tracker, kills } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 4242,
-                [
-                    // Shell at the root (skipped: not a child of op run).
-                    { pid: 4242, ppid: 1, command: "/bin/bash" },
-                    // op run wrapper itself (skipped: it's the parent we
-                    // walk *from*, not a target).
-                    {
-                        pid: 8000,
-                        ppid: 4242,
-                        command: "/opt/homebrew/bin/op run -- java",
-                    },
-                    // Direct child of op run — this is the target.
-                    {
-                        pid: 9000,
-                        ppid: 8000,
-                        command: "java TestJavaLaunch",
-                    },
-                    // A grandchild of op run — NOT a direct child, so not
-                    // signaled.
-                    { pid: 9100, ppid: 9000, command: "java helper" },
-                ],
+                // shell(root) → op run → program → grandchild. Every PID
+                // except the root itself is signaled.
+                [4242, 8000, 9000, 9100],
             ]]),
         })
 
@@ -646,7 +701,11 @@ suite("runtime integration", () => {
 
         await flush()
 
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }])
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGTERM" },
+            { pid: 9100, signal: "SIGTERM" },
+        ])
     })
 
     test("signal-on-stop: prefers shellProcessId (the runInTerminal shell) over processId", async () => {
@@ -656,13 +715,13 @@ suite("runtime integration", () => {
 
         const { tracker, kills } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "KILL" }] },
-            descendantsByRoot: new Map([
+            treeByRoot: new Map([
                 [
                     4242,
                     makeWrappedTree({
                         shellPid: 4242,
                         opPid: 8000,
-                        children: [{ pid: 9000, command: "java" }],
+                        childPids: [9000],
                     }),
                 ],
                 [
@@ -670,7 +729,7 @@ suite("runtime integration", () => {
                     makeWrappedTree({
                         shellPid: 555,
                         opPid: 7000,
-                        children: [{ pid: 9999, command: "java" }],
+                        childPids: [9999],
                     }),
                 ],
             ]),
@@ -685,8 +744,12 @@ suite("runtime integration", () => {
 
         await flush()
 
-        // Walked from shellProcessId (4242), so 9000 — not 9999 — is signaled.
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGKILL" }])
+        // Walked from shellProcessId (4242), so its subtree (8000, 9000) —
+        // not 555's subtree (7000, 9999) — is signaled.
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGKILL" },
+            { pid: 9000, signal: "SIGKILL" },
+        ])
     })
 
     test("signal-on-stop: falls back to processId when shellProcessId is absent", async () => {
@@ -696,18 +759,12 @@ suite("runtime integration", () => {
 
         const { tracker, kills } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "KILL" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 555,
-                // The root we capture is `op run` itself; it has the program
-                // as its direct child. The shell is not in the walked tree.
-                [
-                    {
-                        pid: 555,
-                        ppid: 4242,
-                        command: "/opt/homebrew/bin/op run -- java",
-                    },
-                    { pid: 9000, ppid: 555, command: "java" },
-                ],
+                // The root we capture is `op run` itself (555); it has the
+                // program (9000) as its child. The root is excluded, so only
+                // 9000 is signaled.
+                [555, 9000],
             ]]),
         })
 
@@ -721,20 +778,40 @@ suite("runtime integration", () => {
         assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGKILL" }])
     })
 
-    test("signal-on-stop: warns and skips when no op run wrapper is in the tree", async () => {
+    test("signal-on-stop: signals descendants regardless of the wrapper (op or otherwise)", async () => {
         if (process.platform === "win32") {
             return
         }
 
         const { tracker, kills } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 4242,
-                [
-                    { pid: 4242, ppid: 1, command: "/bin/bash" },
-                    { pid: 9000, ppid: 4242, command: "java" },
-                ],
+                // No `op run` wrapper in the tree — the program is a direct
+                // child of the shell. It is still signaled.
+                [4242, 9000],
             ]]),
+        })
+
+        tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }))
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        )
+
+        await flush()
+
+        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }])
+    })
+
+    test("signal-on-stop: warns and skips when the root has no descendants", async () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const { tracker, kills } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+            // Only the root remains alive (program already gone).
+            treeByRoot: new Map([[4242, [4242]]]),
         })
 
         tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }))
@@ -773,12 +850,12 @@ suite("runtime integration", () => {
 
         const { tracker, kills } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 4242,
                 makeWrappedTree({
                     shellPid: 4242,
                     opPid: 8000,
-                    children: [{ pid: 9000, command: "java" }],
+                    childPids: [9000],
                 }),
             ]]),
         })
@@ -788,7 +865,10 @@ suite("runtime integration", () => {
 
         await flush()
 
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }])
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGTERM" },
+        ])
     })
 
     test("signal-on-stop: term+kill schedules SIGKILL after the grace period", async () => {
@@ -799,11 +879,11 @@ suite("runtime integration", () => {
         const tree = makeWrappedTree({
             shellPid: 4242,
             opPid: 8000,
-            children: [{ pid: 9000, command: "java" }],
+            childPids: [9000],
         })
         const { tracker, kills, timers, fireTimer } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }, { delaySec: 5, signal: "KILL" }] },
-            descendantsByRoot: new Map([[4242, tree]]),
+            treeByRoot: new Map([[4242, tree]]),
         })
 
         tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }))
@@ -813,7 +893,10 @@ suite("runtime integration", () => {
 
         await flush()
 
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }])
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGTERM" },
+        ])
         assert.strictEqual(timers.length, 1)
         assert.strictEqual(timers[0].ms, 5000)
 
@@ -821,7 +904,9 @@ suite("runtime integration", () => {
         await flush()
 
         assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
             { pid: 9000, signal: "SIGTERM" },
+            { pid: 8000, signal: "SIGKILL" },
             { pid: 9000, signal: "SIGKILL" },
         ])
     })
@@ -831,17 +916,17 @@ suite("runtime integration", () => {
             return
         }
 
-        const descendantsByRoot = new Map<number, ProcessInfo[]>([[
+        const treeByRoot = new Map<number, number[]>([[
             4242,
             makeWrappedTree({
                 shellPid: 4242,
                 opPid: 8000,
-                children: [{ pid: 9000, command: "java" }],
+                childPids: [9000],
             }),
         ]])
         const { tracker, kills, fireTimer } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }, { delaySec: 5, signal: "KILL" }] },
-            descendantsByRoot,
+            treeByRoot,
         })
 
         tracker?.onWillReceiveMessage?.(makeResponse({ shellProcessId: 4242 }))
@@ -850,22 +935,21 @@ suite("runtime integration", () => {
         )
         await flush()
         // Between SIGTERM and the grace timer firing, op run forks a helper.
-        descendantsByRoot.set(
+        treeByRoot.set(
             4242,
             makeWrappedTree({
                 shellPid: 4242,
                 opPid: 8000,
-                children: [
-                    { pid: 9000, command: "java" },
-                    { pid: 9001, command: "java forked-helper" },
-                ],
+                childPids: [9000, 9001],
             }),
         )
         fireTimer(0)
         await flush()
 
         assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
             { pid: 9000, signal: "SIGTERM" },
+            { pid: 8000, signal: "SIGKILL" },
             { pid: 9000, signal: "SIGKILL" },
             { pid: 9001, signal: "SIGKILL" },
         ])
@@ -898,12 +982,12 @@ suite("runtime integration", () => {
 
         const { tracker, kills, timers, fireTimer } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }, { delaySec: 5, signal: "KILL" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 4242,
                 makeWrappedTree({
                     shellPid: 4242,
                     opPid: 8000,
-                    children: [{ pid: 9000, command: "java" }],
+                    childPids: [9000],
                 }),
             ]]),
         })
@@ -920,7 +1004,10 @@ suite("runtime integration", () => {
         fireTimer(0) // No-op because canceled.
         await flush()
 
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }])
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGTERM" },
+        ])
     })
 
     test("signal-on-stop: no signal when session config is absent", async () => {
@@ -942,21 +1029,25 @@ suite("runtime integration", () => {
         assert.deepStrictEqual(kills, [])
     })
 
-    test("signal-on-stop: no PID captured -> no signal", async () => {
+    test("signal-on-stop: no terminal launch observed -> no signal, no warning", async () => {
         if (process.platform === "win32") {
             return
         }
 
-        const { tracker, kills } = makeTrackerWithStubs({
+        const { tracker, kills, warnings } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+            pidByMarker: 4242,
         })
 
-        // No runInTerminal response observed; only a disconnect arrives.
+        // No runInTerminal request or response observed (e.g. internalConsole);
+        // only a disconnect arrives.
         tracker?.onWillReceiveMessage?.(
             makeDisconnectRequest({ terminateDebuggee: true }),
         )
 
         await flush()
+
+        assert.deepStrictEqual(warnings, [])
 
         assert.deepStrictEqual(kills, [])
     })
@@ -969,21 +1060,20 @@ suite("runtime integration", () => {
         const registry = new InMemoryTempDirRegistry()
         const kills: KillCall[] = []
 
-        const kill: KillFn = (pid, signal) => {
-            kills.push({ pid, signal })
-            const err = new Error("no such process") as NodeJS.ErrnoException
-            err.code = "ESRCH"
-            throw err
+        const processController: ProcessController = {
+            kill: (pid, signal) => {
+                kills.push({ pid, signal })
+                const err = new Error("no such process") as NodeJS.ErrnoException
+                err.code = "ESRCH"
+                throw err
+            },
+            setTimer: setTimeout,
+            clearTimer: clearTimeout,
         }
 
-        const getDescendants: GetProcessTreeFn = async (root) =>
-            root === 4242
-                ? [
-                    { pid: 4242, ppid: 1, command: "/bin/bash" },
-                    { pid: 8000, ppid: 4242, command: "op run -- java" },
-                    { pid: 9000, ppid: 8000, command: "java" },
-                ]
-                : []
+        const processTreeReader: ProcessTreeReader = {
+            getProcessTree: async (root) => root === 4242 ? [4242, 8000, 9000] : [],
+        }
 
         const session = {
             configuration: {
@@ -993,10 +1083,8 @@ suite("runtime integration", () => {
             },
         } as unknown as vscode.DebugSession
         const tracker = new SecretDebugAdapterTrackerFactory(registry, {
-            kill,
-            setKillTimer: setTimeout,
-            clearKillTimer: clearTimeout,
-            getProcessTree: getDescendants,
+            processController,
+            processTreeReader,
         })
             .createDebugAdapterTracker(session) as
                 | vscode.DebugAdapterTracker
@@ -1010,7 +1098,101 @@ suite("runtime integration", () => {
 
         await flush()
 
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }])
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGTERM" },
+        ])
+    })
+
+    test("signal-on-stop: falls back to marker lookup when the terminal reports no PID", async () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const { tracker, kills, warnings, markerQueries } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+            pidByMarker: 4242,
+            treeByRoot: new Map([[4242, [4242, 8000, 9000]]]),
+        })
+
+        // The rewrite creates the per-launch temp dir whose basename is the marker.
+        const request = makeRequest(["node", "app.js"], { FOO: "bar" })
+        tracker?.onDidSendMessage?.(request)
+
+        // External terminals: the runInTerminal response has no PID fields.
+        tracker?.onWillReceiveMessage?.(makeResponse({}))
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        )
+
+        await flush()
+
+        assert.strictEqual(markerQueries.length, 1)
+        assert.match(markerQueries[0], /^secret-resolver-/)
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGTERM" },
+        ])
+        assert.deepStrictEqual(warnings, [])
+
+        const trackerWithStop = tracker as vscode.DebugAdapterTracker & {
+            onWillStopSession?: () => void
+        }
+        trackerWithStop.onWillStopSession?.()
+    })
+
+    test("signal-on-stop: warns when the marker lookup finds no process", async () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const { tracker, kills, warnings } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+            pidByMarker: null,
+        })
+
+        const request = makeRequest(["node", "app.js"], { FOO: "bar" })
+        tracker?.onDidSendMessage?.(request)
+
+        tracker?.onWillReceiveMessage?.(makeResponse({}))
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        )
+
+        await flush()
+
+        assert.deepStrictEqual(kills, [])
+        assert.strictEqual(warnings.length, 1)
+        assert.match(warnings[0], /no process matching/)
+
+        const trackerWithStop = tracker as vscode.DebugAdapterTracker & {
+            onWillStopSession?: () => void
+        }
+        trackerWithStop.onWillStopSession?.()
+    })
+
+    test("signal-on-stop: warns when the terminal reports no PID and no rewrite happened", async () => {
+        if (process.platform === "win32") {
+            return
+        }
+
+        const { tracker, kills, warnings, markerQueries } = makeTrackerWithStubs({
+            sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }] },
+            pidByMarker: 4242,
+        })
+
+        // No runInTerminal request → no env rewrite → no marker.
+        tracker?.onWillReceiveMessage?.(makeResponse({}))
+        tracker?.onWillReceiveMessage?.(
+            makeDisconnectRequest({ terminateDebuggee: true }),
+        )
+
+        await flush()
+
+        assert.deepStrictEqual(kills, [])
+        assert.deepStrictEqual(markerQueries, [])
+        assert.strictEqual(warnings.length, 1)
+        assert.match(warnings[0], /no launch marker/)
     })
 
     test("signal-on-stop: onWillStopSession does not cancel pending kill timer", async () => {
@@ -1020,12 +1202,12 @@ suite("runtime integration", () => {
 
         const { tracker, timers } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "TERM" }, { delaySec: 5, signal: "KILL" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 4242,
                 makeWrappedTree({
                     shellPid: 4242,
                     opPid: 8000,
-                    children: [{ pid: 9000, command: "java" }],
+                    childPids: [9000],
                 }),
             ]]),
         })
@@ -1059,12 +1241,12 @@ suite("runtime integration", () => {
 
         const { tracker, kills } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "INT" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 4242,
                 makeWrappedTree({
                     shellPid: 4242,
                     opPid: 8000,
-                    children: [{ pid: 9000, command: "node app.js" }],
+                    childPids: [9000],
                 }),
             ]]),
         })
@@ -1076,7 +1258,10 @@ suite("runtime integration", () => {
 
         await flush()
 
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGINT" }])
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGINT" },
+            { pid: 9000, signal: "SIGINT" },
+        ])
     })
 
     test("signal-on-stop: SIGHUP is forwarded correctly", async () => {
@@ -1086,12 +1271,12 @@ suite("runtime integration", () => {
 
         const { tracker, kills } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 0, signal: "HUP" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 4242,
                 makeWrappedTree({
                     shellPid: 4242,
                     opPid: 8000,
-                    children: [{ pid: 9000, command: "node app.js" }],
+                    childPids: [9000],
                 }),
             ]]),
         })
@@ -1103,60 +1288,13 @@ suite("runtime integration", () => {
 
         await flush()
 
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGHUP" }])
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGHUP" },
+            { pid: 9000, signal: "SIGHUP" },
+        ])
     })
 
-    test("token-tag: double-wraps with op run --env-file=token.env when tokenTag is set", () => {
-        if (process.platform === "win32") {
-            return
-        }
-
-        const registry = new InMemoryTempDirRegistry()
-        const { tracker } = makeTrackerWithStubs({
-            registry,
-            sessionConfig: { steps: [], tokenTag: "my-tag" },
-            getServiceAccountToken: (tag) => tag === "my-tag" ? "token-value" : undefined,
-        })
-        assert.ok(tracker)
-
-        const message = makeRequest(["node", "app.js"], { DB: "op://v/i/db" })
-        tracker!.onDidSendMessage?.(message)
-
-        const args = message.arguments.args
-        // Outer: op run --env-file=token.env -- <inner>
-        // Inner: op run --env-file=env -- node app.js
-        assert.strictEqual(args[0], configuredOpPath(), "outer: op path")
-        assert.strictEqual(args[1], "run", "outer: run")
-        assert.ok(
-            args[2].startsWith("--env-file=") && args[2].endsWith("token.env"),
-            `outer: token.env flag, got ${args[2]}`,
-        )
-        assert.strictEqual(args[3], "--", "outer: --")
-        assert.strictEqual(args[4], configuredOpPath(), "inner: op path")
-        assert.strictEqual(args[5], "run", "inner: run")
-        assert.ok(
-            args[6].startsWith("--env-file=") && !args[6].endsWith("token.env"),
-            `inner: env flag, got ${args[6]}`,
-        )
-        assert.strictEqual(args[7], "--", "inner: --")
-        assert.deepStrictEqual(args.slice(8), ["node", "app.js"])
-
-        // Token file contains the service account token.
-        const tokenEnvFilePath = args[2].slice("--env-file=".length)
-        const tokenEnv = readDotenvSync(tokenEnvFilePath)
-        assert.strictEqual(tokenEnv["OP_SERVICE_ACCOUNT_TOKEN"], "token-value")
-
-        // Secret refs live in the inner env file.
-        const innerEnvFilePath = args[6].slice("--env-file=".length)
-        const innerEnv = readDotenvSync(innerEnvFilePath)
-        assert.strictEqual(innerEnv["DB"], "op://v/i/db")
-
-        assert.deepStrictEqual(message.arguments.env, {})
-
-        cleanupRegistry(registry)
-    })
-
-    test("token-tag: single-wraps (no token.env) when tokenTag is absent", () => {
+    test("wraps env once in op run --env-file (no token.env double-wrap)", () => {
         if (process.platform === "win32") {
             return
         }
@@ -1171,32 +1309,12 @@ suite("runtime integration", () => {
         const args = message.arguments.args
         assert.strictEqual(args[0], configuredOpPath())
         assert.strictEqual(args[1], "run")
-        assert.ok(args[2].startsWith("--env-file="))
+        assert.ok(args[2].startsWith("--env-file=") && !args[2].endsWith("token.env"))
         assert.strictEqual(args[3], "--")
         assert.deepStrictEqual(args.slice(4), ["node", "app.js"])
 
         assert.deepStrictEqual(message.arguments.env, {})
-        cleanupRegistry(registry)
-    })
-
-    test("token-tag: arguments.env is {} even when token is injected", () => {
-        if (process.platform === "win32") {
-            return
-        }
-
-        const registry = new InMemoryTempDirRegistry()
-        const { tracker } = makeTrackerWithStubs({
-            registry,
-            sessionConfig: { steps: [], tokenTag: "my-tag" },
-            getServiceAccountToken: () => "token-value",
-        })
-        assert.ok(tracker)
-
-        const message = makeRequest(["node", "app.js"], { FOO: "bar" })
-        tracker!.onDidSendMessage?.(message)
-
-        assert.deepStrictEqual(message.arguments.env, {})
-        cleanupRegistry(registry)
+        registry.cleanup()
     })
 
     test("account-id: single-wrap passes --account when accountId is set", () => {
@@ -1227,57 +1345,7 @@ suite("runtime integration", () => {
         const env = readDotenvSync(envFilePath)
         assert.strictEqual(env["DB"], "op://v/i/db")
 
-        cleanupRegistry(registry)
-    })
-
-    test("account-id: double-wrap passes --account to both wraps", () => {
-        if (process.platform === "win32") {
-            return
-        }
-
-        const registry = new InMemoryTempDirRegistry()
-        const { tracker } = makeTrackerWithStubs({
-            registry,
-            sessionConfig: { steps: [], tokenTag: "my-tag", accountId: "SOME_ACCOUNT_ID" },
-            getServiceAccountToken: () => "token-value",
-        })
-        assert.ok(tracker)
-
-        const message = makeRequest(["node", "app.js"], { DB: "op://v/i/db" })
-        tracker!.onDidSendMessage?.(message)
-
-        const args = message.arguments.args
-        // Outer: op run --account SOME_ACCOUNT_ID --env-file=token.env -- <inner>
-        assert.strictEqual(args[0], configuredOpPath(), "outer: op path")
-        assert.strictEqual(args[1], "run", "outer: run")
-        assert.strictEqual(args[2], "--account", "outer: --account")
-        assert.strictEqual(args[3], "SOME_ACCOUNT_ID", "outer: account id")
-        assert.ok(
-            args[4].startsWith("--env-file=") && args[4].endsWith("token.env"),
-            `outer: token.env flag, got ${args[4]}`,
-        )
-        assert.strictEqual(args[5], "--", "outer: --")
-        // Inner: op run --account SOME_ACCOUNT_ID --env-file=env -- node app.js
-        assert.strictEqual(args[6], configuredOpPath(), "inner: op path")
-        assert.strictEqual(args[7], "run", "inner: run")
-        assert.strictEqual(args[8], "--account", "inner: --account")
-        assert.strictEqual(args[9], "SOME_ACCOUNT_ID", "inner: account id")
-        assert.ok(
-            args[10].startsWith("--env-file=") && !args[10].endsWith("token.env"),
-            `inner: env flag, got ${args[10]}`,
-        )
-        assert.strictEqual(args[11], "--", "inner: --")
-        assert.deepStrictEqual(args.slice(12), ["node", "app.js"])
-
-        const tokenEnvFilePath = args[4].slice("--env-file=".length)
-        const tokenEnv = readDotenvSync(tokenEnvFilePath)
-        assert.strictEqual(tokenEnv["OP_SERVICE_ACCOUNT_TOKEN"], "token-value")
-
-        const envFilePath = args[10].slice("--env-file=".length)
-        const env = readDotenvSync(envFilePath)
-        assert.strictEqual(env["DB"], "op://v/i/db")
-
-        cleanupRegistry(registry)
+        registry.cleanup()
     })
 
     test("account-id: no --account flag when accountId is absent", () => {
@@ -1295,7 +1363,7 @@ suite("runtime integration", () => {
         const args = message.arguments.args
         assert.ok(!args.includes("--account"), "no --account flag")
 
-        cleanupRegistry(registry)
+        registry.cleanup()
     })
 
     test("signal-on-stop: leading delaySec fires timer before first signal", async () => {
@@ -1305,12 +1373,12 @@ suite("runtime integration", () => {
 
         const { tracker, kills, timers, fireTimer } = makeTrackerWithStubs({
             sessionConfig: { steps: [{ delaySec: 10, signal: "TERM" }] },
-            descendantsByRoot: new Map([[
+            treeByRoot: new Map([[
                 4242,
                 makeWrappedTree({
                     shellPid: 4242,
                     opPid: 8000,
-                    children: [{ pid: 9000, command: "java" }],
+                    childPids: [9000],
                 }),
             ]]),
         })
@@ -1330,7 +1398,10 @@ suite("runtime integration", () => {
         fireTimer(0)
         await flush()
 
-        assert.deepStrictEqual(kills, [{ pid: 9000, signal: "SIGTERM" }])
+        assert.deepStrictEqual(kills, [
+            { pid: 8000, signal: "SIGTERM" },
+            { pid: 9000, signal: "SIGTERM" },
+        ])
     })
 })
 

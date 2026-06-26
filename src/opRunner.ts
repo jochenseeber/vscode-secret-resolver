@@ -27,18 +27,28 @@ export class OpCliNotFoundError extends Error {
 }
 
 /**
- * Thrown when an `op` command exits non-zero. The stderr text is preserved so
- * the caller can surface it to the user verbatim.
+ * Thrown when an `op` command exits non-zero or produces unusable output. The
+ * stderr text is preserved so the caller can surface it to the user verbatim.
  */
-export class OpInjectError extends Error {
+export class OpCliError extends Error {
     readonly stderr: string
     readonly exitCode: number | null
 
     constructor(message: string, stderr: string, exitCode: number | null) {
         super(message)
-        this.name = "OpInjectError"
+        this.name = "OpCliError"
         this.stderr = stderr
         this.exitCode = exitCode
+    }
+}
+
+/**
+ * Thrown when `op inject` fails.
+ */
+export class OpInjectError extends OpCliError {
+    constructor(message: string, stderr: string, exitCode: number | null) {
+        super(message, stderr, exitCode)
+        this.name = "OpInjectError"
     }
 }
 
@@ -86,6 +96,15 @@ export interface OpItemSummary {
     vaultId: string
 }
 
+/**
+ * Classified `execFile` failure, shared by the inject and CLI error
+ * normalizers so the ENOENT / abort / stderr handling lives in one place.
+ */
+type OpExecFailure =
+    | { kind: "notFound"; error: OpCliNotFoundError }
+    | { kind: "aborted"; error: Error }
+    | { kind: "failed"; detail: string; stderr: string; exitCode: number | null }
+
 // ---------------------------------------------------------------------------
 // OpRunner
 // ---------------------------------------------------------------------------
@@ -104,13 +123,20 @@ export class OpRunner {
         options: OpInjectOptions = {},
     ): Promise<Map<string, string>> {
         if (refs.length === 0) {
-            return new Map()
+            const empty = new Map<string, string>()
+            return empty
         }
 
         const uuid = randomUUID()
-        const template = buildTemplate(refs, uuid)
-        const dir = await mkdtemp(path.join(os.tmpdir(), "secret-resolver-"))
-        const file = path.join(dir, "template")
+        const template = OpRunner.buildTemplate(refs, uuid)
+        // `op inject` reads the template from a file. Passing it on stdin does
+        // not work when spawned from Node: the child's stdin is an AF_UNIX
+        // socketpair (not a real pipe), which `op` does not accept as piped
+        // input ("expected data on stdin but none found"). We write the
+        // template — which holds only `op://` references, never secrets — to a
+        // `0600`-ish temp file and pass it via `--in-file`, then remove it.
+        const directory = await mkdtemp(path.join(os.tmpdir(), "secret-resolver-"))
+        const file = path.join(directory, "template")
 
         try {
             await writeFile(file, template, "utf8")
@@ -121,11 +147,7 @@ export class OpRunner {
 
             const { stdout } = await execFileAsync(
                 this.opPath,
-                [
-                    ...withAccount(["inject"], options.account),
-                    "--in-file",
-                    file,
-                ],
+                [...OpRunner.accountArgs(options.account), "inject", "--in-file", file],
                 {
                     signal: options.signal,
                     encoding: "utf8",
@@ -134,19 +156,20 @@ export class OpRunner {
                 },
             )
 
-            const resolved = parseOutput(stdout, refs, uuid)
+            const resolved = OpRunner.parseOutput(stdout, refs, uuid)
             return resolved
         }
         catch (err) {
-            throw normalizeInjectError(err, this.opPath)
+            throw OpRunner.normalizeInjectError(err, this.opPath)
         }
         finally {
-            await rm(dir, { recursive: true, force: true })
+            await rm(directory, { recursive: true, force: true })
         }
     }
 
     /**
      * Runs `op account list --format json` and returns the typed account list.
+     * Entries without both an email and a non-empty `account_uuid` are dropped.
      */
     async listAccounts(options: OpBaseOptions): Promise<OpAccount[]> {
         const raw = await this.execJson<Array<{ email?: string; account_uuid?: string }>>(
@@ -155,10 +178,18 @@ export class OpRunner {
             "op account list returned non-JSON output",
         )
 
-        const accounts = raw.map((entry) => ({
-            email: typeof entry.email === "string" ? entry.email : "",
-            accountUuid: typeof entry.account_uuid === "string" ? entry.account_uuid : "",
-        }))
+        const accounts: OpAccount[] = []
+
+        for (const entry of raw) {
+            if (
+                typeof entry.email === "string"
+                && typeof entry.account_uuid === "string"
+                && entry.account_uuid !== ""
+            ) {
+                accounts.push({ email: entry.email, accountUuid: entry.account_uuid })
+            }
+        }
+
         return accounts
     }
 
@@ -167,10 +198,17 @@ export class OpRunner {
      * Always strips any inherited `OP_SERVICE_ACCOUNT_TOKEN` from the child env.
      */
     async listItems(tag: string, options: OpListItemsOptions): Promise<OpItemSummary[]> {
-        const args = withAccount(
-            ["item", "list", "--tags", tag, "--categories", "API Credential", "--format", "json"],
-            options.account,
-        )
+        const args = [
+            ...OpRunner.accountArgs(options.account),
+            "item",
+            "list",
+            "--tags",
+            tag,
+            "--categories",
+            "API Credential",
+            "--format",
+            "json",
+        ]
 
         const raw = await this.execJson<Array<{ id?: string; vault?: { id?: string } }>>(
             args,
@@ -178,29 +216,42 @@ export class OpRunner {
             "op item list returned non-JSON output",
         )
 
-        const items = raw
-            .filter((entry) => typeof entry.id === "string" && typeof entry.vault?.id === "string")
-            .map((entry) => ({
-                id: entry.id as string,
-                vaultId: entry.vault!.id as string,
-            }))
+        const items: OpItemSummary[] = []
+
+        for (const entry of raw) {
+            const vaultId = entry.vault?.id
+
+            if (typeof entry.id === "string" && typeof vaultId === "string") {
+                items.push({ id: entry.id, vaultId })
+            }
+        }
+
         return items
     }
 
     /**
      * Runs `op item get <itemId> --vault <vaultId> --fields label=credential --format json`.
      * Always strips any inherited `OP_SERVICE_ACCOUNT_TOKEN` from the child env.
-     * Returns the credential field value.
+     * Returns the credential field value, or `null` when the field is missing
+     * or empty.
      */
     async getItemCredential(
         itemId: string,
         vaultId: string,
         options: OpGetItemOptions,
-    ): Promise<string> {
-        const args = withAccount(
-            ["item", "get", itemId, "--vault", vaultId, "--fields", "label=credential", "--format", "json"],
-            options.account,
-        )
+    ): Promise<string | null> {
+        const args = [
+            ...OpRunner.accountArgs(options.account),
+            "item",
+            "get",
+            itemId,
+            "--vault",
+            vaultId,
+            "--fields",
+            "label=credential",
+            "--format",
+            "json",
+        ]
 
         const parsed = await this.execJson<unknown>(
             args,
@@ -212,7 +263,7 @@ export class OpRunner {
             ? (parsed as Array<{ value?: unknown }>)
             : [parsed as { value?: unknown }]
         const value = fields[0]?.value
-        const credential = typeof value === "string" ? value : ""
+        const credential = typeof value === "string" && value !== "" ? value : null
         return credential
     }
 
@@ -226,10 +277,14 @@ export class OpRunner {
         args: readonly string[],
         account?: string,
     ): string[] {
-        const accountArgs = (account !== undefined && account.trim() !== "")
-            ? ["--account", account]
-            : []
-        const result = [this.opPath, "run", ...accountArgs, `--env-file=${envFilePath}`, "--", ...args]
+        const result = [
+            this.opPath,
+            "run",
+            ...OpRunner.accountArgs(account),
+            `--env-file=${envFilePath}`,
+            "--",
+            ...args,
+        ]
         return result
     }
 
@@ -243,7 +298,7 @@ export class OpRunner {
         parseErrorMessage: string,
     ): Promise<T> {
         const env = options.stripServiceAccountToken === true
-            ? withoutServiceAccountToken(process.env)
+            ? OpRunner.withoutServiceAccountToken(process.env)
             : undefined
 
         let stdout: string
@@ -257,140 +312,169 @@ export class OpRunner {
             stdout = result.stdout
         }
         catch (err) {
-            throw normalizeCliError(err, this.opPath)
+            throw OpRunner.normalizeCliError(err, this.opPath)
         }
 
         try {
-            return JSON.parse(stdout) as T
+            const parsed = JSON.parse(stdout) as T
+            return parsed
         }
         catch {
-            throw new OpInjectError(parseErrorMessage, stdout, null)
+            throw new OpCliError(parseErrorMessage, stdout, null)
         }
     }
-}
+    // -----------------------------------------------------------------------
+    // Private static helpers
+    // -----------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Private module helpers
-// ---------------------------------------------------------------------------
+    /**
+     * Returns `["--account", <id>]` when `account` is a non-blank string, or
+     * an empty array otherwise. The `op` CLI accepts `--account` as a global
+     * flag, so callers can splice the result before or after the subcommand.
+     */
+    private static accountArgs(account: string | undefined): string[] {
+        if (account === undefined || account.trim() === "") {
+            const empty: string[] = []
+            return empty
+        }
 
-/**
- * Prepends `--account <id>` to `args` when account is set. The `op` CLI
- * accepts `--account` as a global flag before the subcommand.
- */
-function withAccount(args: string[], account: string | undefined): string[] {
-    if (account === undefined || account.trim() === "") {
+        const args = ["--account", account]
         return args
     }
 
-    const result = ["--account", account, ...args]
-    return result
-}
-
-function withoutServiceAccountToken(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    const childEnv = { ...env }
-    delete childEnv.OP_SERVICE_ACCOUNT_TOKEN
-    return childEnv
-}
-
-/**
- * Error normalizer for `inject`. Wraps AbortError in `OpInjectAbortedError`
- * so callers can distinguish cancellation without depending on AbortSignal.
- * Contrast with `normalizeCliError`, which re-throws AbortError as-is.
- */
-function normalizeInjectError(err: unknown, opPath: string): Error {
-    if (typeof err !== "object" || err === null) {
-        return new OpInjectError(String(err), "", null)
+    private static withoutServiceAccountToken(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+        const childEnv = { ...env }
+        delete childEnv.OP_SERVICE_ACCOUNT_TOKEN
+        return childEnv
     }
 
-    const e = err as NodeJS.ErrnoException & { stderr?: string | Buffer; code?: string | number }
-
-    if (e.code === "ENOENT") {
-        return new OpCliNotFoundError(opPath)
-    }
-
-    if (e.name === "AbortError" || e.code === "ABORT_ERR") {
-        return new OpInjectAbortedError()
-    }
-
-    const stderr = extractStderr(e)
-    const exitCode = typeof e.code === "number" ? e.code : null
-    const message = stderr.length > 0
-        ? `op inject failed: ${stderr}`
-        : `op inject failed: ${e.message}`
-    return new OpInjectError(message, stderr, exitCode)
-}
-
-/**
- * Error normalizer for account/item CLI calls. Re-throws AbortError as-is so
- * callers can detect cancellation via AbortSignal. Contrast with
- * `normalizeInjectError`, which wraps AbortError in `OpInjectAbortedError`.
- */
-function normalizeCliError(err: unknown, opPath: string): Error {
-    if (typeof err !== "object" || err === null) {
-        return new OpInjectError(String(err), "", null)
-    }
-
-    const e = err as NodeJS.ErrnoException & { stderr?: string | Buffer; code?: string | number }
-
-    if (e.code === "ENOENT") {
-        return new OpCliNotFoundError(opPath)
-    }
-
-    if (e.name === "AbortError" || e.code === "ABORT_ERR") {
-        return e as Error
-    }
-
-    const stderr = extractStderr(e)
-    const exitCode = typeof e.code === "number" ? e.code : null
-    const message = stderr.length > 0
-        ? `op failed: ${stderr}`
-        : `op failed: ${e.message}`
-    return new OpInjectError(message, stderr, exitCode)
-}
-
-function extractStderr(
-    e: NodeJS.ErrnoException & { stderr?: string | Buffer },
-): string {
-    const raw = e.stderr instanceof Buffer
-        ? e.stderr.toString("utf8")
-        : typeof e.stderr === "string"
-        ? e.stderr
-        : ""
-    return raw.trim()
-}
-
-function buildTemplate(refs: readonly string[], uuid: string): string {
-    const lines: string[] = []
-
-    for (let i = 0; i < refs.length; i += 1) {
-        lines.push(`__SR_${uuid}_BEGIN_${i}__`)
-        lines.push(`{{ ${refs[i]} }}`)
-        lines.push(`__SR_${uuid}_END_${i}__`)
-    }
-
-    const template = `${lines.join("\n")}\n`
-    return template
-}
-
-function parseOutput(
-    stdout: string,
-    refs: readonly string[],
-    uuid: string,
-): Map<string, string> {
-    const out = new Map<string, string>()
-    const pattern = new RegExp(
-        `__SR_${uuid}_BEGIN_(\\d+)__\\n([\\s\\S]*?)\\n__SR_${uuid}_END_\\1__`,
-        "g",
-    )
-
-    for (const match of stdout.matchAll(pattern)) {
-        const idx = Number(match[1])
-        const value = match[2]
-
-        if (idx >= 0 && idx < refs.length) {
-            out.set(refs[idx], value)
+    /**
+     * Classifies an `execFile` failure into not-found / aborted / failed so
+     * the two normalizers below share the ENOENT, abort, and stderr handling.
+     */
+    private static classifyExecError(err: unknown, opPath: string): OpExecFailure {
+        if (typeof err !== "object" || err === null) {
+            const failure: OpExecFailure = {
+                kind: "failed",
+                detail: String(err),
+                stderr: "",
+                exitCode: null,
+            }
+            return failure
         }
+
+        const error = err as NodeJS.ErrnoException & { stderr?: string | Buffer; code?: string | number }
+
+        if (error.code === "ENOENT") {
+            const failure: OpExecFailure = {
+                kind: "notFound",
+                error: new OpCliNotFoundError(opPath),
+            }
+            return failure
+        }
+
+        if (error.name === "AbortError" || error.code === "ABORT_ERR") {
+            const failure: OpExecFailure = { kind: "aborted", error: error as Error }
+            return failure
+        }
+
+        const stderr = OpRunner.extractStderr(error)
+        const exitCode = typeof error.code === "number" ? error.code : null
+        const detail = stderr.length > 0 ? stderr : error.message
+        const failure: OpExecFailure = { kind: "failed", detail, stderr, exitCode }
+        return failure
     }
 
-    return out
+    /**
+     * Error normalizer for `inject`. Wraps AbortError in `OpInjectAbortedError`
+     * so callers can distinguish cancellation without depending on AbortSignal.
+     * Contrast with `normalizeCliError`, which re-throws AbortError as-is.
+     */
+    private static normalizeInjectError(err: unknown, opPath: string): Error {
+        const failure = OpRunner.classifyExecError(err, opPath)
+
+        if (failure.kind === "notFound") {
+            return failure.error
+        }
+
+        if (failure.kind === "aborted") {
+            const aborted = new OpInjectAbortedError()
+            return aborted
+        }
+
+        const injectError = new OpInjectError(
+            `op inject failed: ${failure.detail}`,
+            failure.stderr,
+            failure.exitCode,
+        )
+        return injectError
+    }
+
+    /**
+     * Error normalizer for account/item CLI calls. Re-throws AbortError as-is so
+     * callers can detect cancellation via AbortSignal. Contrast with
+     * `normalizeInjectError`, which wraps AbortError in `OpInjectAbortedError`.
+     */
+    private static normalizeCliError(err: unknown, opPath: string): Error {
+        const failure = OpRunner.classifyExecError(err, opPath)
+
+        if (failure.kind === "notFound" || failure.kind === "aborted") {
+            return failure.error
+        }
+
+        const cliError = new OpCliError(
+            `op failed: ${failure.detail}`,
+            failure.stderr,
+            failure.exitCode,
+        )
+        return cliError
+    }
+
+    private static extractStderr(
+        error: NodeJS.ErrnoException & { stderr?: string | Buffer },
+    ): string {
+        const raw = error.stderr instanceof Buffer
+            ? error.stderr.toString("utf8")
+            : typeof error.stderr === "string"
+            ? error.stderr
+            : ""
+        const trimmed = raw.trim()
+        return trimmed
+    }
+
+    private static buildTemplate(refs: readonly string[], uuid: string): string {
+        const lines: string[] = []
+
+        for (let i = 0; i < refs.length; i += 1) {
+            lines.push(`__SR_${uuid}_BEGIN_${i}__`)
+            lines.push(`{{ ${refs[i]} }}`)
+            lines.push(`__SR_${uuid}_END_${i}__`)
+        }
+
+        const template = `${lines.join("\n")}\n`
+        return template
+    }
+
+    private static parseOutput(
+        stdout: string,
+        refs: readonly string[],
+        uuid: string,
+    ): Map<string, string> {
+        const out = new Map<string, string>()
+        const pattern = new RegExp(
+            `__SR_${uuid}_BEGIN_(\\d+)__\\n([\\s\\S]*?)\\n__SR_${uuid}_END_\\1__`,
+            "g",
+        )
+
+        for (const match of stdout.matchAll(pattern)) {
+            const idx = Number(match[1])
+            const value = match[2]
+
+            if (idx >= 0 && idx < refs.length) {
+                out.set(refs[idx], value)
+            }
+        }
+
+        return out
+    }
 }

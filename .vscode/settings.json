@@ -54,25 +54,31 @@
         "editor.tabSize": 2
     },
     "claudeCode.preferredLocation": "sidebar",
+    "editor.codeLens": false,
     "editor.detectIndentation": false,
     "editor.formatOnSave": true,
+    "editor.formatOnSaveMode": "modificationsIfAvailable",
     "editor.insertSpaces": true,
     "editor.rulers": [
         130
     ],
     "editor.tabSize": 4,
+    "editor.useTabStops": false,
     "editor.wordWrapColumn": 130,
+    "files.encoding": "utf8",
+    "files.eol": "\n",
+    "files.insertFinalNewline": true,
+    "files.trimFinalNewlines": true,
+    "files.trimTrailingWhitespace": true,
     "js/ts.format.semicolons": "remove",
     "json.schemaDownload.trustedDomains": {
         "https://dprint.dev/": true,
+        "https://dprint.dev/schemas/v0.json": true,
         "https://json-schema.org/": true,
         "https://json.schemastore.org/": true,
         "https://raw.githubusercontent.com/microsoft/vscode/": true,
         "https://schemastore.azurewebsites.net/": true,
         "https://www.schemastore.org/": true
     },
-    "markdownlint.ignore": [
-        "**/.serena/**"
-    ],
     "redhat.telemetry.enabled": false
 }

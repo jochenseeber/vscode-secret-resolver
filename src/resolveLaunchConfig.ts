@@ -1,418 +1,406 @@
 import type * as vscode from "vscode"
 
-import { EnvFileNotFoundError } from "./dotenv"
 import {
-    ACCOUNT_EMAIL_VAR,
-    ACCOUNT_GIT_CONFIG_VAR,
-    ACCOUNT_ID_VAR,
-    type EnvMap,
-    findOpRefs,
-    hasOpRef,
-    mergeEnv,
-    MODE_VAR,
-    parseSecretResolverMode,
-    parseSignalOnStop,
-    replaceOpRefs,
-    SIGNAL_ON_STOP_VAR,
+    AccountResolver,
+    type AccountResolverFactory,
+    LiteralAccountResolver,
+    NullAccountResolver,
+} from "./accountResolver"
+import { EnvFileNotFoundError } from "./dotenv"
+import { OpInjectAbortedError, OpRunner } from "./opRunner"
+import type { RefResolutionScope, ResolverCache } from "./resolverCache"
+import {
+    SECRET_RESOLVER_CONFIG_FIELD,
+    SessionConfigCodec,
+    SIGNAL_NAMES,
+    type SignalName,
     type SignalStep,
-    type StringEnvMap,
-    stripInternalEnvVars,
-    TOKEN_TAG_VAR,
-} from "./envHelpers"
-import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, OpRunner } from "./opRunner"
-import { getCachedResolvedRef, setCachedResolvedRef } from "./resolverCache"
-import type { SecretCache } from "./secretCache"
-import { buildSessionConfig, SECRET_RESOLVER_CONFIG_FIELD } from "./sessionConfig"
+} from "./sessionConfig"
+import { StringEnvMap } from "./stringEnvMap"
+import type { TokenResolverFactory } from "./tokenResolver"
+import type { UserNotifier } from "./userNotifier"
 
-type TerminalConsole = "integratedTerminal" | "externalTerminal"
+const INTERNAL_VAR_PATTERN = /^SECRET_RESOLVER_/
 
-function isTerminalConsoleKind(kind: string): kind is TerminalConsole {
-    return (kind === "integratedTerminal") || (kind === "externalTerminal")
-}
+const SIGNAL_ON_STOP_VAR = "SECRET_RESOLVER_SIGNAL_ON_STOP"
 
-export interface ResolveDeps {
-    cache: SecretCache
-    runner: OpRunner
-    parseEnvFile: (path: string) => Promise<StringEnvMap>
-    showError: (message: string) => void
-    showWarning: (message: string) => void
-    resolveTokenForTag?: (tag: string, signal?: AbortSignal, account?: string) => Promise<string>
-    resolveAccountForEmail?: (email: string, signal?: AbortSignal) => Promise<string>
-    resolveAccountForGitConfig?: (subdir: string, signal?: AbortSignal) => Promise<string>
-}
+const TOKEN_TAG_VAR = "SECRET_RESOLVER_TOKEN_TAG"
 
-type LaunchEnvReadResult =
-    | { kind: "unchanged" }
-    | { kind: "resolved"; mergedEnv: EnvMap; strippedEnv: EnvMap }
+const ACCOUNT_EMAIL_VAR = "SECRET_RESOLVER_ACCOUNT_EMAIL"
 
-interface AccountSelection {
-    accountId: string | null
-    email: string | null
-    gitSubdir: string | null
-}
+const ACCOUNT_GIT_CONFIG_VAR = "SECRET_RESOLVER_ACCOUNT_GIT_CONFIG"
 
-interface LaunchOptions {
-    mode: ReturnType<typeof parseSecretResolverMode>
-    consoleKind: string
-    isTerminalConsole: boolean
-    useOpRun: boolean
-    hasOpRefs: boolean
-    tokenTag: string | null
-    accountSelection: AccountSelection
-    signalOnStop: SignalStep[] | null
+const ACCOUNT_ID_VAR = "SECRET_RESOLVER_ACCOUNT_ID"
+
+/**
+ * Reads and parses a launch `envFile`. Implemented via `DotenvFile` in
+ * production (see `configProvider.ts`); tests inject in-memory fakes.
+ */
+export interface EnvFileReader {
+    parse(path: string): Promise<Record<string, string>>
 }
 
 /**
- * Pure-logic resolver that takes a launch config and produces a new config
- * with `op://` refs resolved (or left intact for the legacy opt-in path).
- * Returns `undefined` to signal "abort the launch". Caller is expected to
- * have already shown any user-facing error via `deps.showError`.
+ * Reports whether the current workspace is trusted. Implemented via
+ * `vscode.workspace.isTrusted` in production (see `configProvider.ts`); tests
+ * inject fakes. Secrets are never resolved for untrusted workspaces, matching
+ * the `untrustedWorkspaces: "limited"` declaration in `package.json`.
  */
-export async function resolveLaunchConfig(
-    config: vscode.DebugConfiguration,
-    deps: ResolveDeps,
-    signal?: AbortSignal,
-): Promise<vscode.DebugConfiguration | undefined> {
-    const launchEnv = await readLaunchEnv(config, deps)
-
-    if (launchEnv === undefined) {
-        return undefined
-    }
-
-    if (launchEnv.kind === "unchanged") {
-        return config
-    }
-
-    const options = parseLaunchOptions(launchEnv.mergedEnv, launchEnv.strippedEnv, config, deps)
-
-    if (options.mode === "op" && options.consoleKind === "internalConsole") {
-        deps.showError(
-            "Secret Resolver: SECRET_RESOLVER_MODE=\"op\" is incompatible with console=\"internalConsole\" (op run requires a terminal). Set SECRET_RESOLVER_MODE=\"cache\" in env, or change console to integratedTerminal or externalTerminal.",
-        )
-        return undefined
-    }
-
-    const accountId = await resolveLaunchAccount(options.accountSelection, deps, signal)
-
-    if (accountId === undefined) {
-        return undefined
-    }
-
-    const serviceAccountToken = await resolveLaunchToken(options, accountId, deps, signal)
-
-    if (serviceAccountToken === null) {
-        return undefined
-    }
-
-    const finalEnv = await resolveFinalEnv(
-        launchEnv.strippedEnv,
-        options,
-        deps,
-        signal,
-        serviceAccountToken,
-        accountId,
-    )
-
-    if (finalEnv === undefined) {
-        return undefined
-    }
-
-    return buildResolvedDebugConfiguration(config, finalEnv, options, accountId)
+export interface WorkspaceTrustReader {
+    isTrusted(): boolean
 }
 
-async function readLaunchEnv(
-    config: vscode.DebugConfiguration,
-    deps: ResolveDeps,
-): Promise<LaunchEnvReadResult | undefined> {
-    const inlineEnv = config.env
-    const envFilePath = typeof config.envFile === "string"
-        ? config.envFile
-        : undefined
+/**
+ * Result of parsing `SECRET_RESOLVER_SIGNAL_ON_STOP`: explicitly or
+ * implicitly off, unparsable (warn and treat as off), or a step sequence.
+ */
+type SignalOnStopParseResult =
+    | { kind: "off" }
+    | { kind: "invalid" }
+    | { kind: "steps"; steps: SignalStep[] }
 
-    if (inlineEnv === undefined && envFilePath === undefined) {
-        return { kind: "unchanged" }
-    }
+export class LaunchConfigResolver {
+    private static readonly OP_REF_PATTERN = /^op:\/\//
+    private static readonly DEFAULT_STEP_DELAY_SECONDS = 30
+    private static readonly STEP_PATTERN = /^(?:([0-9]+):)?([a-zA-Z]+)$/
 
-    if (inlineEnv !== undefined && !isStringEnvMap(inlineEnv)) {
-        return { kind: "unchanged" }
-    }
+    constructor(
+        private readonly cache: ResolverCache,
+        private readonly runner: OpRunner,
+        private readonly envFileReader: EnvFileReader,
+        private readonly notifier: UserNotifier,
+        private readonly accountResolverFactory: AccountResolverFactory,
+        private readonly tokenResolverFactory: TokenResolverFactory,
+        private readonly workspaceTrust: WorkspaceTrustReader,
+    ) {}
 
-    let fileMap: StringEnvMap = {}
+    async resolve(
+        config: vscode.DebugConfiguration,
+        workspacePath: string | undefined,
+        signal?: AbortSignal,
+    ): Promise<vscode.DebugConfiguration | undefined> {
+        const sanitizedConfig = LaunchConfigResolver.removeSessionConfigField(config)
+        const launchEnv = sanitizedConfig.env
+        const envFilePath = typeof sanitizedConfig.envFile === "string"
+            ? sanitizedConfig.envFile
+            : undefined
 
-    if (envFilePath !== undefined) {
+        if (launchEnv === undefined && envFilePath === undefined) {
+            return sanitizedConfig
+        }
+
+        if (!this.workspaceTrust.isTrusted()) {
+            this.notifier.showError(
+                "Secret Resolver: workspace is not trusted; refusing to resolve the launch environment.",
+            )
+            return undefined
+        }
+
         try {
-            fileMap = await deps.parseEnvFile(envFilePath)
+            const env = new StringEnvMap()
+
+            if (envFilePath !== undefined) {
+                env.addAll(await this.readEnvFile(envFilePath))
+            }
+
+            if (launchEnv !== undefined) {
+                env.addAll(new StringEnvMap(launchEnv))
+            }
+
+            const signalParse = LaunchConfigResolver.parseSignalOnStop(
+                env.getTrimmedValue(SIGNAL_ON_STOP_VAR),
+            )
+
+            if (signalParse.kind === "invalid") {
+                this.notifier.showWarning(
+                    `invalid SECRET_RESOLVER_SIGNAL_ON_STOP value; defaulting to off`,
+                )
+            }
+
+            const signalOnStop = signalParse.kind === "steps" ? signalParse.steps : null
+
+            const tokenTag = env.getTrimmedValue(TOKEN_TAG_VAR) || null
+            const accountId = await this.resolveLaunchAccount(env, workspacePath, signal)
+            const serviceAccountToken = await this.resolveServiceAccountToken(
+                env,
+                tokenTag,
+                accountId,
+                signal,
+            )
+
+            env.deleteIf((key) => INTERNAL_VAR_PATTERN.test(key))
+
+            const resolutionScope: RefResolutionScope = { accountId, tokenTag }
+            const finalEnv = await this.resolveFinalEnv(
+                env,
+                serviceAccountToken,
+                resolutionScope,
+                signal,
+            )
+
+            const resolvedConfig = this.buildResolvedDebugConfiguration(
+                sanitizedConfig,
+                finalEnv,
+                signalOnStop,
+                accountId,
+            )
+            return resolvedConfig
+        }
+        catch (err) {
+            if (err instanceof OpInjectAbortedError) {
+                return undefined
+            }
+
+            this.notifier.showError((err as Error).message)
+            return undefined
+        }
+    }
+
+    private async readEnvFile(path: string): Promise<StringEnvMap> {
+        try {
+            const fileEnv = new StringEnvMap(await this.envFileReader.parse(path))
+            return fileEnv
         }
         catch (err) {
             if (err instanceof EnvFileNotFoundError) {
-                deps.showWarning(
-                    `Secret Resolver: envFile not found: ${err.path}`,
-                )
+                this.notifier.showWarning(`Secret Resolver: envFile not found: ${err.path}`)
+                const emptyEnv = new StringEnvMap()
+                return emptyEnv
             }
-            else {
-                deps.showError(
-                    `Secret Resolver: failed to read envFile: ${(err as Error).message}`,
-                )
-                return undefined
-            }
+
+            throw new Error(`failed to read envFile: ${(err as Error).message}`)
         }
     }
 
-    const mergedEnv = mergeEnv(fileMap, inlineEnv as EnvMap | undefined)
-    const strippedEnv = stripInternalEnvVars(mergedEnv)
+    private async resolveLaunchAccount(
+        env: StringEnvMap,
+        workspacePath: string | undefined,
+        signal?: AbortSignal,
+    ): Promise<string | null> {
+        const gitSubdirectory = env.getTrimmedValue(ACCOUNT_GIT_CONFIG_VAR)
+        const email = env.getTrimmedValue(ACCOUNT_EMAIL_VAR)
+        const accountId = env.getTrimmedValue(ACCOUNT_ID_VAR)
 
-    return { kind: "resolved", mergedEnv, strippedEnv }
-}
+        let resolver: AccountResolver
 
-function parseLaunchOptions(
-    mergedEnv: EnvMap,
-    strippedEnv: EnvMap,
-    config: vscode.DebugConfiguration,
-    deps: ResolveDeps,
-): LaunchOptions {
-    const consoleKind = typeof config.console === "string"
-        ? config.console
-        : ""
-    const modeValue = mergedEnv[MODE_VAR]
-    const mode = parseSecretResolverMode(
-        typeof modeValue === "string" ? modeValue : null,
-        deps.showWarning,
-    )
-    const isTerminalConsole = isTerminalConsoleKind(consoleKind)
-    const useOpRun = mode === "op" && isTerminalConsole
-    const tokenTag = getTrimmedEnvValue(mergedEnv, TOKEN_TAG_VAR)
-    const signalOnStop = parseSignalOnStop(
-        getTrimmedEnvValue(mergedEnv, SIGNAL_ON_STOP_VAR),
-        deps.showWarning,
-    )
-
-    return {
-        mode,
-        consoleKind,
-        isTerminalConsole,
-        useOpRun,
-        hasOpRefs: hasOpRef(strippedEnv),
-        tokenTag,
-        accountSelection: {
-            accountId: getTrimmedEnvValue(mergedEnv, ACCOUNT_ID_VAR),
-            email: getTrimmedEnvValue(mergedEnv, ACCOUNT_EMAIL_VAR),
-            gitSubdir: getTrimmedEnvValue(mergedEnv, ACCOUNT_GIT_CONFIG_VAR),
-        },
-        signalOnStop,
-    }
-}
-
-async function resolveLaunchAccount(
-    selection: AccountSelection,
-    deps: ResolveDeps,
-    signal?: AbortSignal,
-): Promise<string | null | undefined> {
-    if (selection.accountId !== null) {
-        return selection.accountId
-    }
-
-    if (selection.email !== null && deps.resolveAccountForEmail !== undefined) {
-        try {
-            return await deps.resolveAccountForEmail(selection.email, signal)
+        if (gitSubdirectory) {
+            resolver = this.accountResolverFactory.createForGitConfig(gitSubdirectory, workspacePath)
         }
-        catch (err) {
-            deps.showError(`Secret Resolver: ${(err as Error).message}`)
-            return undefined
+        else if (email) {
+            resolver = this.accountResolverFactory.createForEmail(email)
         }
+        else if (accountId) {
+            resolver = new LiteralAccountResolver(accountId)
+        }
+        else {
+            resolver = new NullAccountResolver()
+        }
+
+        const resolvedAccountId = await resolver.resolve(signal)
+        return resolvedAccountId
     }
 
-    if (selection.gitSubdir !== null && deps.resolveAccountForGitConfig !== undefined) {
-        try {
-            return await deps.resolveAccountForGitConfig(selection.gitSubdir, signal)
+    private async resolveServiceAccountToken(
+        env: StringEnvMap,
+        tag: string | null,
+        accountId: string | null,
+        signal?: AbortSignal,
+    ): Promise<string | null> {
+        if (tag === null || !env.some((_key, value) => LaunchConfigResolver.isOpRef(value))) {
+            return null
         }
-        catch (err) {
-            deps.showError(`Secret Resolver: ${(err as Error).message}`)
-            return undefined
-        }
+
+        const resolver = this.tokenResolverFactory.createForTag(tag)
+        const token = await resolver.resolve(accountId ?? undefined, signal)
+        const resolvedToken = token ?? null
+        return resolvedToken
     }
 
-    return null
-}
-
-async function resolveLaunchToken(
-    options: LaunchOptions,
-    accountId: string | null,
-    deps: ResolveDeps,
-    signal?: AbortSignal,
-): Promise<string | undefined | null> {
-    if (options.tokenTag === null || !options.hasOpRefs || deps.resolveTokenForTag === undefined) {
-        return undefined
-    }
-
-    try {
-        return await deps.resolveTokenForTag(
-            options.tokenTag,
+    private async resolveFinalEnv(
+        strippedEnv: StringEnvMap,
+        serviceAccountToken: string | null,
+        scope: RefResolutionScope,
+        signal?: AbortSignal,
+    ): Promise<Record<string, string>> {
+        const resolved = await this.resolveAllRefs(
+            strippedEnv,
+            serviceAccountToken,
+            scope,
             signal,
-            accountId ?? undefined,
         )
-    }
-    catch (err) {
-        deps.showError(`Secret Resolver: ${(err as Error).message}`)
-        return null
-    }
-}
 
-async function resolveFinalEnv(
-    strippedEnv: EnvMap,
-    options: LaunchOptions,
-    deps: ResolveDeps,
-    signal: AbortSignal | undefined,
-    serviceAccountToken: string | undefined,
-    accountId: string | null,
-): Promise<EnvMap | undefined> {
-    if (options.useOpRun) {
-        return strippedEnv
-    }
+        const patch = new StringEnvMap()
 
-    const resolved = await resolveAllRefs(
-        strippedEnv,
-        deps,
-        signal,
-        serviceAccountToken,
-        accountId ?? undefined,
-    )
+        strippedEnv.forEach((key, value) => {
+            const resolvedValue = resolved.get(value)
 
-    if (resolved === undefined) {
-        return undefined
+            if (resolvedValue !== undefined) {
+                patch.setValue(key, resolvedValue)
+            }
+        })
+
+        const result = new StringEnvMap()
+        result.addAll(strippedEnv)
+        result.addAll(patch)
+        const finalEnv = result.toRecord()
+        return finalEnv
     }
 
-    return replaceOpRefs(strippedEnv, resolved)
-}
+    private buildResolvedDebugConfiguration(
+        config: vscode.DebugConfiguration,
+        finalEnv: Record<string, string>,
+        signalOnStop: SignalStep[] | null,
+        accountId: string | null,
+    ): vscode.DebugConfiguration {
+        const next: vscode.DebugConfiguration = { ...config, env: finalEnv }
 
-function buildResolvedDebugConfiguration(
-    config: vscode.DebugConfiguration,
-    finalEnv: EnvMap,
-    options: LaunchOptions,
-    accountId: string | null,
-): vscode.DebugConfiguration {
-    const next: vscode.DebugConfiguration = { ...config, env: finalEnv }
+        if ("envFile" in next) {
+            delete next.envFile
+        }
 
-    if ("envFile" in next) {
-        delete next.envFile
-    }
-
-    if (options.isTerminalConsole) {
-        const sessionConfig = buildSessionConfig({
-            signalOnStop: options.signalOnStop,
-            tokenTag: options.hasOpRefs ? options.tokenTag : null,
-            useOpRun: options.useOpRun,
+        const sessionConfig = SessionConfigCodec.build({
+            signalOnStop,
             accountId,
         })
 
-        if (sessionConfig === undefined) {
-            return next
+        if (sessionConfig !== undefined) {
+            ;(next as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] = sessionConfig
         }
 
-        ;(next as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] = sessionConfig
+        return next
     }
 
-    return next
-}
-
-function getTrimmedEnvValue(env: EnvMap, key: string): string | null {
-    const value = env[key]
-
-    if (typeof value !== "string") {
-        return null
-    }
-
-    const trimmed = value.trim()
-
-    return trimmed === "" ? null : trimmed
-}
-
-async function resolveAllRefs(
-    env: EnvMap,
-    deps: ResolveDeps,
-    signal?: AbortSignal,
-    token?: string,
-    account?: string,
-): Promise<Map<string, string> | undefined> {
-    const refs = findOpRefs(env)
-
-    if (refs.length === 0) {
-        return new Map()
-    }
-
-    const out = new Map<string, string>()
-    const missing: string[] = []
-
-    for (const ref of refs) {
-        const cached = getCachedResolvedRef(deps.cache, ref)
-
-        if (cached !== undefined) {
-            out.set(ref, cached)
+    /**
+     * Returns `config` without any pre-existing session-config field. The
+     * field is an internal resolver → tracker channel; an incoming value was
+     * authored by the launch config, not by this extension, and is discarded.
+     * Returns the input unchanged when the field is absent.
+     */
+    private static removeSessionConfigField(
+        config: vscode.DebugConfiguration,
+    ): vscode.DebugConfiguration {
+        if (!(SECRET_RESOLVER_CONFIG_FIELD in config)) {
+            return config
         }
-        else {
-            missing.push(ref)
-        }
+
+        const sanitized = { ...config }
+        delete (sanitized as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD]
+        return sanitized
     }
 
-    if (missing.length === 0) {
+    private async resolveAllRefs(
+        env: StringEnvMap,
+        token: string | null,
+        scope: RefResolutionScope,
+        signal?: AbortSignal,
+    ): Promise<Map<string, string>> {
+        const opRefEnv = env.filter((_key, value) => LaunchConfigResolver.isOpRef(value))
+        const refs = [...new Set(opRefEnv.valueList())]
+
+        if (refs.length === 0) {
+            const empty = new Map<string, string>()
+            return empty
+        }
+
+        const out = new Map<string, string>()
+        const missing: string[] = []
+
+        for (const ref of refs) {
+            const cached = this.cache.getResolvedRef(ref, scope)
+
+            if (cached !== null) {
+                out.set(ref, cached)
+            }
+            else {
+                missing.push(ref)
+            }
+        }
+
+        if (missing.length === 0) {
+            return out
+        }
+
+        const resolved = await this.runner.inject(
+            missing,
+            { signal, token: token ?? undefined, account: scope.accountId ?? undefined },
+        )
+
+        const unresolved = missing.filter((ref) => !resolved.has(ref))
+
+        if (unresolved.length > 0) {
+            throw new Error(
+                `op inject did not return values for ${unresolved.length} reference(s); aborting launch.`,
+            )
+        }
+
+        for (const [ref, value] of resolved) {
+            this.cache.setResolvedRef(ref, scope, value)
+            out.set(ref, value)
+        }
+
         return out
     }
 
-    let resolved: Map<string, string>
-
-    try {
-        resolved = await deps.runner.inject(
-            missing,
-            { signal, token, account },
-        )
+    /**
+     * True when `value` is a non-null string that begins with `op://`.
+     */
+    private static isOpRef(value: string | null | undefined): value is string {
+        const isRef = typeof value === "string" && LaunchConfigResolver.OP_REF_PATTERN.test(value)
+        return isRef
     }
-    catch (err) {
-        if (err instanceof OpInjectAbortedError) {
-            return undefined
+
+    /**
+     * Parses `SECRET_RESOLVER_SIGNAL_ON_STOP` into an ordered list of signal
+     * steps. Format: `(([0-9]+:)?SIGNAL)(+(([0-9]+:)?SIGNAL))*` where SIGNAL is
+     * one of TERM, KILL, INT, HUP (case-insensitive). An optional `N:` prefix on
+     * each step sets the delay in seconds before that signal is sent; the default
+     * is 0 for the first step and `DEFAULT_STEP_DELAY_SECONDS` for all others.
+     * Missing / empty / `"off"` values yield `kind: "off"`; any parse error
+     * yields `kind: "invalid"` so the caller can warn.
+     */
+    private static parseSignalOnStop(value: string | null | undefined): SignalOnStopParseResult {
+        if (typeof value !== "string") {
+            const off: SignalOnStopParseResult = { kind: "off" }
+            return off
         }
 
-        if (err instanceof OpCliNotFoundError) {
-            deps.showError(`Secret Resolver: ${err.message}`)
-            return undefined
+        const trimmed = value.trim()
+
+        if (trimmed === "" || trimmed.toLowerCase() === "off") {
+            const off: SignalOnStopParseResult = { kind: "off" }
+            return off
         }
 
-        if (err instanceof OpInjectError) {
-            deps.showError(`Secret Resolver: ${err.message}`)
-            return undefined
+        const tokens = trimmed.split("+")
+        const steps: SignalStep[] = []
+
+        for (let i = 0; i < tokens.length; i += 1) {
+            const token = tokens[i].trim()
+            const match = LaunchConfigResolver.STEP_PATTERN.exec(token)
+
+            if (match === null) {
+                const invalid: SignalOnStopParseResult = { kind: "invalid" }
+                return invalid
+            }
+
+            const delayStr = match[1]
+            const signalStr = match[2].toUpperCase() as SignalName
+
+            if (!SIGNAL_NAMES.has(signalStr)) {
+                const invalid: SignalOnStopParseResult = { kind: "invalid" }
+                return invalid
+            }
+
+            const delaySec = delayStr !== undefined
+                ? Number(delayStr)
+                : i === 0
+                ? 0
+                : LaunchConfigResolver.DEFAULT_STEP_DELAY_SECONDS
+
+            steps.push({ delaySec, signal: signalStr })
         }
 
-        deps.showError(
-            `Secret Resolver: unexpected error invoking op inject: ${(err as Error).message}`,
-        )
-        return undefined
+        const result: SignalOnStopParseResult = { kind: "steps", steps }
+        return result
     }
-
-    const unresolved = missing.filter((ref) => !resolved.has(ref))
-
-    if (unresolved.length > 0) {
-        deps.showError(
-            `Secret Resolver: op inject did not return values for ${unresolved.length} reference(s); aborting launch.`,
-        )
-        return undefined
-    }
-
-    for (const [ref, value] of resolved) {
-        setCachedResolvedRef(deps.cache, ref, value)
-        out.set(ref, value)
-    }
-
-    return out
-}
-
-function isStringEnvMap(value: unknown): value is EnvMap {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        return false
-    }
-
-    for (const v of Object.values(value as Record<string, unknown>)) {
-        if (v !== null && v !== undefined && typeof v !== "string") {
-            return false
-        }
-    }
-
-    return true
 }

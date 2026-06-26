@@ -14,7 +14,10 @@ const TAG_BYTES = 16
  *
  * The session key lives in a closure-scoped `Buffer` rather than as a
  * `string`, so accidental `JSON.stringify` / `inspect` of the cache object
- * does not surface the material. This is obfuscation, not real encryption:
+ * does not surface the material. This class deliberately uses `#` (runtime)
+ * private fields instead of TypeScript `private` — the rest of the codebase
+ * uses `private` — because the privacy here must hold at runtime, not just at
+ * compile time. This is obfuscation, not real encryption:
  * an attacker with extension-host code execution has both the key and the
  * ciphertext in the same heap. Treat it as defense against heap dumps and
  * accidental log disclosure, not against a determined attacker.

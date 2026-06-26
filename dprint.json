@@ -55,6 +55,10 @@
     },
     "useTabs": false,
     "yaml": {
-        "indentWidth": 2
+        "formatComments": true,
+        "indentWidth": 2,
+        "printWidth": 120,
+        "proseWrap": "always",
+        "quotes": "forceDouble"
     }
 }

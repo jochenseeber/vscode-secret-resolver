@@ -1,54 +1,79 @@
 import * as vscode from "vscode"
 
-import { type GitEmailStore, resolveAccountForEmail, resolveAccountForGitConfig } from "./accountResolver"
-import { parseEnvFile } from "./dotenv"
+import { type AccountResolverFactory, EmailAccountResolver, GitConfigAccountResolver } from "./accountResolver"
+
+import { DotenvFile } from "./dotenv"
 import { GitRunner } from "./gitRunner"
+import { ConsoleLogger, type Logger } from "./logger"
 import { OpRunner } from "./opRunner"
-import { resolveLaunchConfig } from "./resolveLaunchConfig"
+import { type EnvFileReader, LaunchConfigResolver, type WorkspaceTrustReader } from "./resolveLaunchConfig"
+import { ResolverCache } from "./resolverCache"
 import type { SecretCache } from "./secretCache"
-import { resolveTokenForTag } from "./tokenResolver"
+import { TagTokenResolver, type TokenResolverFactory } from "./tokenResolver"
+import { WindowUserNotifier } from "./vscodeAdapters"
 
-const GIT_EMAILS_KEY = "secretResolver.gitEmails"
-
-class WorkspaceStateGitEmailStore implements GitEmailStore {
-    constructor(private readonly ws: vscode.Memento) {}
-
-    get(dir: string): string | undefined {
-        const emails = this.ws.get<Record<string, string>>(GIT_EMAILS_KEY)
-        const email = emails?.[dir]
-        return email
-    }
-
-    set(dir: string, email: string): void {
-        const current = this.ws.get<Record<string, string>>(GIT_EMAILS_KEY) ?? {}
-        this.updateBestEffort({ ...current, [dir]: email })
-    }
-
-    clear(): void {
-        this.updateBestEffort(undefined)
-    }
-
-    private updateBestEffort(value: Record<string, string> | undefined): void {
-        void this.ws.update(GIT_EMAILS_KEY, value).then(undefined, (err: unknown) => {
-            console.warn(
-                `[secret-resolver] failed to persist git email cache: ${(err as Error).message}`,
-            )
-        })
-    }
-}
-
-/**
- * VS Code-aware wrapper around `resolveLaunchConfig`. Bridges
- * `CancellationToken` to `AbortSignal`, reads `secretResolver.opPath` from
- * configuration, and routes user messages through `vscode.window`.
- */
 export class SecretDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
-    readonly #cache: SecretCache
-    readonly #gitEmailStore: GitEmailStore
+    private readonly cache: SecretCache
+    private readonly logger: Logger
+    private resolver: LaunchConfigResolver
 
-    constructor(cache: SecretCache, gitEmailStore: GitEmailStore) {
-        this.#cache = cache
-        this.#gitEmailStore = gitEmailStore
+    constructor(cache: SecretCache, logger: Logger = new ConsoleLogger()) {
+        this.cache = cache
+        this.logger = logger
+        this.resolver = this.buildResolver()
+    }
+
+    /**
+     * Rebuilds the launch-config resolver, re-reading `secretResolver.opPath`.
+     * Called when the setting changes.
+     */
+    refreshResolver(): void {
+        this.resolver = this.buildResolver()
+    }
+
+    private buildResolver(): LaunchConfigResolver {
+        const opPath = vscode.workspace
+            .getConfiguration("secretResolver")
+            .get<string>("opPath", "op")
+        const opRunner = new OpRunner(opPath)
+        const gitRunner = new GitRunner()
+        const resolverCache = new ResolverCache(this.cache)
+        const notifier = new WindowUserNotifier()
+
+        const envFileReader: EnvFileReader = {
+            parse: (path) => new DotenvFile(path).parseFile(),
+        }
+
+        const workspaceTrust: WorkspaceTrustReader = {
+            isTrusted: () => vscode.workspace.isTrusted,
+        }
+
+        const accountResolverFactory: AccountResolverFactory = {
+            createForEmail: (email) => new EmailAccountResolver(email, opRunner, resolverCache),
+            createForGitConfig: (subdirectory, workspacePath) =>
+                new GitConfigAccountResolver(
+                    subdirectory,
+                    opRunner,
+                    gitRunner,
+                    resolverCache,
+                    workspacePath,
+                ),
+        }
+
+        const tokenResolverFactory: TokenResolverFactory = {
+            createForTag: (tag) => new TagTokenResolver(tag, opRunner, resolverCache, this.logger),
+        }
+
+        const launchResolver = new LaunchConfigResolver(
+            resolverCache,
+            opRunner,
+            envFileReader,
+            notifier,
+            accountResolverFactory,
+            tokenResolverFactory,
+            workspaceTrust,
+        )
+        return launchResolver
     }
 
     async resolveDebugConfigurationWithSubstitutedVariables(
@@ -56,45 +81,15 @@ export class SecretDebugConfigurationProvider implements vscode.DebugConfigurati
         debugConfiguration: vscode.DebugConfiguration,
         token?: vscode.CancellationToken,
     ): Promise<vscode.DebugConfiguration | undefined> {
-        const opPath = vscode.workspace
-            .getConfiguration("secretResolver")
-            .get<string>("opPath", "op")
-        const opRunner = new OpRunner(opPath)
-        const gitRunner = new GitRunner()
-
         const controller = new AbortController()
         const subscription = token?.onCancellationRequested(() => {
             controller.abort()
         })
 
         try {
-            const resolved = await resolveLaunchConfig(
+            const resolved = await this.resolver.resolve(
                 debugConfiguration,
-                {
-                    cache: this.#cache,
-                    runner: opRunner,
-                    parseEnvFile,
-                    showError: (m) => {
-                        void vscode.window.showErrorMessage(m)
-                    },
-                    showWarning: (m) => {
-                        void vscode.window.showWarningMessage(m)
-                    },
-                    resolveTokenForTag: (tag, signal, account) =>
-                        resolveTokenForTag(tag, opRunner, this.#cache, signal, account),
-                    resolveAccountForEmail: (email, signal) =>
-                        resolveAccountForEmail(email, opRunner, this.#cache, signal),
-                    resolveAccountForGitConfig: (subdir, signal) =>
-                        resolveAccountForGitConfig(
-                            subdir,
-                            opRunner,
-                            gitRunner,
-                            this.#cache,
-                            signal,
-                            folder?.uri.fsPath,
-                            this.#gitEmailStore,
-                        ),
-                },
+                folder?.uri.fsPath,
                 controller.signal,
             )
             return resolved
@@ -103,15 +98,4 @@ export class SecretDebugConfigurationProvider implements vscode.DebugConfigurati
             subscription?.dispose()
         }
     }
-}
-
-export function createDefaultProvider(
-    cache: SecretCache,
-    gitEmailStore: GitEmailStore,
-): SecretDebugConfigurationProvider {
-    return new SecretDebugConfigurationProvider(cache, gitEmailStore)
-}
-
-export function createGitEmailStore(ws: vscode.Memento): GitEmailStore {
-    return new WorkspaceStateGitEmailStore(ws)
 }

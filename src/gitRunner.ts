@@ -31,20 +31,20 @@ export class GitRunner {
             stdout = result.stdout
         }
         catch (err) {
-            const e = err as NodeJS.ErrnoException & { code?: string | number }
+            const error = err as NodeJS.ErrnoException & { code?: string | number }
 
-            if (e.code === "ENOENT") {
+            if (error.code === "ENOENT") {
                 throw new GitEmailNotFoundError(
                     "git is not installed or not on PATH.",
                 )
             }
 
-            if (e.name === "AbortError" || e.code === "ABORT_ERR") {
-                throw e
+            if (error.name === "AbortError" || error.code === "ABORT_ERR") {
+                throw error
             }
 
             throw new GitEmailNotFoundError(
-                `git config --get user.email failed: ${e.message}`,
+                `git config --get user.email failed: ${error.message}`,
             )
         }
 

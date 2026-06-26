@@ -3,16 +3,19 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import type { DebugProtocol } from "@vscode/debugprotocol"
-import { formatDotenv } from "./dotenv"
-import type { StringEnvMap } from "./envHelpers"
+import { DotenvFile } from "./dotenv"
+import type { Logger } from "./logger"
 import { type OpRunner } from "./opRunner"
 import type { SecretResolverSessionConfig } from "./sessionConfig"
-
-export type ServiceAccountTokenProvider = (tag: string) => string | undefined
+import { StringEnvMap } from "./stringEnvMap"
+import { InMemoryTempDirRegistry } from "./tempDirRegistry"
+import type { UserNotifier } from "./userNotifier"
 
 export class RunInTerminalEnvRewriter {
     constructor(
-        private readonly getServiceAccountToken: ServiceAccountTokenProvider,
+        private readonly notifier: UserNotifier,
+        private readonly logger: Logger,
+        private readonly launchEnv: Record<string, string> = {},
         private readonly processPid: number = process.pid,
     ) {}
 
@@ -21,88 +24,79 @@ export class RunInTerminalEnvRewriter {
         runner: OpRunner,
         sessionConfig: SecretResolverSessionConfig | undefined,
     ): string | undefined {
-        const stringEnv = toStringEnv(message.arguments.env)
+        const envFileEntries = this.buildEnvFileEntries(message.arguments.env)
 
-        if (Object.keys(stringEnv).length === 0) {
+        if (envFileEntries.size === 0) {
             return undefined
         }
 
-        let createdDir: string | undefined
+        const stringEnv = envFileEntries.toRecord()
+
+        let createdDirectory: string | undefined
 
         try {
-            const dir = fs.mkdtempSync(
+            const directory = fs.mkdtempSync(
                 path.join(os.tmpdir(), "secret-resolver-"),
             )
-            createdDir = dir
+            createdDirectory = directory
 
             const accountId = sessionConfig?.accountId
-            const envFilePath = path.join(dir, "env")
+            const envFilePath = path.join(directory, "env")
 
-            fs.writeFileSync(envFilePath, formatDotenv(stringEnv), {
+            new DotenvFile(envFilePath).write(stringEnv)
+            fs.writeFileSync(path.join(directory, ".pid"), String(this.processPid), {
                 mode: 0o600,
             })
-            fs.writeFileSync(path.join(dir, ".pid"), String(this.processPid), {
-                mode: 0o600,
-            })
 
-            const token = sessionConfig?.tokenTag !== undefined
-                ? this.getServiceAccountToken(sessionConfig.tokenTag)
-                : undefined
-
-            if (token !== undefined) {
-                const tokenEnvFilePath = path.join(dir, "token.env")
-                fs.writeFileSync(
-                    tokenEnvFilePath,
-                    formatDotenv({ OP_SERVICE_ACCOUNT_TOKEN: token }),
-                    { mode: 0o600 },
-                )
-
-                const innerArgs = runner.buildRunArgs(envFilePath, message.arguments.args, accountId)
-                message.arguments.args = runner.buildRunArgs(tokenEnvFilePath, innerArgs, accountId)
-            }
-            else {
-                message.arguments.args = runner.buildRunArgs(
-                    envFilePath,
-                    message.arguments.args,
-                    accountId,
-                )
-            }
+            message.arguments.args = runner.buildRunArgs(
+                envFilePath,
+                message.arguments.args,
+                accountId,
+            )
 
             message.arguments.env = {}
-            return dir
+            return directory
         }
         catch (err) {
-            if (createdDir !== undefined) {
-                try {
-                    fs.rmSync(createdDir, { recursive: true, force: true })
-                }
-                catch {
-                    // best-effort
-                }
+            if (createdDirectory !== undefined) {
+                InMemoryTempDirRegistry.removeDirectoryQuietly(createdDirectory)
             }
 
-            console.error(
-                `[secret-resolver] runInTerminal rewrite failed: ${(err as Error).message}`,
+            const detail = (err as Error).message
+            this.logger.error(`runInTerminal rewrite failed: ${detail}`)
+            this.notifier.showWarning(
+                `Secret Resolver: could not prepare the terminal env file (${detail}); launching without the op run wrapper.`,
             )
             return undefined
         }
     }
-}
 
-function toStringEnv(
-    env: Record<string, string | null> | undefined,
-): StringEnvMap {
-    const out: StringEnvMap = {}
+    /**
+     * Merges the launch config env with the DAP request env. The launch env
+     * is the baseline so every launch variable moves into the env file, even
+     * ones the adapter did not forward in the `runInTerminal` request.
+     * Adapter-provided entries win on clashes (the adapter may have extended
+     * a launch value, e.g. `NODE_OPTIONS`), and `null` entries (DAP "unset")
+     * remove the variable.
+     */
+    private buildEnvFileEntries(
+        requestEnv: Record<string, string | null> | undefined,
+    ): StringEnvMap {
+        const merged = new StringEnvMap(this.launchEnv)
 
-    if (env === undefined || env === null) {
-        return out
-    }
-
-    for (const [key, value] of Object.entries(env)) {
-        if (typeof value === "string") {
-            out[key] = value
+        if (requestEnv === undefined || requestEnv === null) {
+            return merged
         }
-    }
 
-    return out
+        for (const [key, value] of Object.entries(requestEnv)) {
+            if (typeof value === "string") {
+                merged.setValue(key, value)
+            }
+            else if (value === null) {
+                merged.deleteKey(key)
+            }
+        }
+
+        return merged
+    }
 }

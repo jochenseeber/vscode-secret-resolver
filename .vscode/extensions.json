@@ -26,6 +26,7 @@
         "ms-edgedevtools.vscode-edge-devtools",
         "ms-playwright.playwright",
         "mutantdino.resourcemonitor",
+        "nrwl.angular-console",
         "pascalreitermann93.vscode-yaml-sort",
         "sanjulaganepola.github-local-actions",
         "shipitsmarter.vscode-change-naming-convention",

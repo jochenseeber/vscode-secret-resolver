@@ -1,0 +1,19 @@
+{
+    "mcpServers": {
+        "playwright": {
+            "args": [
+                "dlx",
+                "@playwright/mcp@latest"
+            ],
+            "command": "pnpm"
+        }
+    },
+    "serena": {
+        "args": [
+            "start-mcp-server",
+            "--context",
+            "claude-code"
+        ],
+        "command": "serena"
+    }
+}

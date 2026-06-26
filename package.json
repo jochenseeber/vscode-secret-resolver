@@ -1,50 +1,10 @@
 {
-    "name": "vscode-secret-resolver",
-    "displayName": "Secret Resolver",
-    "description": "Resolves 1Password secret references in VS Code launch configuration environment variables",
-    "version": "1.1.0-dev",
-    "releaseRefPrefix": "v",
-    "releaseBranchSuffix": "-dev",
-    "packageManager": "pnpm@10.33.0",
-    "pnpm": {
-        "overrides": {
-            "serialize-javascript": "7.0.5"
-        }
-    },
-    "preview": true,
-    "publisher": "jochenseeber",
-    "license": "MIT",
-    "icon": "images/icon.png",
-    "galleryBanner": {
-        "color": "#fffbeb",
-        "theme": "light"
-    },
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/jochenseeber/vscode-secret-resolver"
-    },
+    "activationEvents": [
+        "onDebug"
+    ],
     "bugs": {
         "url": "https://github.com/jochenseeber/vscode-secret-resolver/issues"
     },
-    "homepage": "https://github.com/jochenseeber/vscode-secret-resolver#readme",
-    "qna": "marketplace",
-    "keywords": [
-        "1password",
-        "debug",
-        "env",
-        "environment",
-        "launch",
-        "op",
-        "secrets"
-    ],
-    "engines": {
-        "node": ">=20",
-        "pnpm": ">=10 <11",
-        "vscode": "^1.116.0"
-    },
-    "categories": [
-        "Debuggers"
-    ],
     "capabilities": {
         "untrustedWorkspaces": {
             "description": "Resolves op:// references from launch configurations. Only enable in workspaces you trust — launch configs can reference secrets from any vault the signed-in op CLI can read.",
@@ -52,16 +12,8 @@
         },
         "virtualWorkspaces": false
     },
-    "activationEvents": [
-        "onDebug"
-    ],
-    "main": "./dist/extension.js",
-    "files": [
-        "CHANGELOG.md",
-        "LICENSE.txt",
-        "README.md",
-        "dist/extension.js",
-        "images/"
+    "categories": [
+        "Debuggers"
     ],
     "contributes": {
         "commands": [
@@ -82,6 +34,8 @@
             "title": "Secret Resolver"
         }
     },
+    "dependencies": {},
+    "description": "Resolves 1Password secret references in VS Code launch configuration environment variables",
     "devDependencies": {
         "@eslint/compat": "^2.0.5",
         "@resvg/resvg-js": "^2.6.2",
@@ -109,5 +63,51 @@
         "vite": "^8.0.10",
         "vitest": "^4.1.5"
     },
-    "dependencies": {}
+    "displayName": "Secret Resolver",
+    "engines": {
+        "node": ">=20",
+        "pnpm": ">=10 <11",
+        "vscode": "^1.116.0"
+    },
+    "files": [
+        "CHANGELOG.md",
+        "LICENSE.txt",
+        "README.md",
+        "dist/extension.js",
+        "images/"
+    ],
+    "galleryBanner": {
+        "color": "#fffbeb",
+        "theme": "light"
+    },
+    "homepage": "https://github.com/jochenseeber/vscode-secret-resolver#readme",
+    "icon": "images/icon.png",
+    "keywords": [
+        "1password",
+        "debug",
+        "env",
+        "environment",
+        "launch",
+        "op",
+        "secrets"
+    ],
+    "license": "MIT",
+    "main": "./dist/extension.js",
+    "name": "vscode-secret-resolver",
+    "packageManager": "pnpm@10.33.0",
+    "pnpm": {
+        "overrides": {
+            "serialize-javascript": "7.0.5"
+        }
+    },
+    "preview": true,
+    "publisher": "jochenseeber",
+    "qna": "marketplace",
+    "releaseBranchSuffix": "-dev",
+    "releaseRefPrefix": "v",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/jochenseeber/vscode-secret-resolver"
+    },
+    "version": "1.1.0-dev"
 }

@@ -2,116 +2,130 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import type { TempDirRegistry } from "./debugAdapterProxy"
-
 export const TEMP_DIR_PREFIX = "secret-resolver-"
 
 /**
- * In-process registry of temp dirs the trackers have created. Each entry is
+ * Master registry of temp directories the trackers have created. Owned by
+ * `extension.ts`; the registry survives across debug sessions and lets the
+ * extension drive cleanup from `deactivate`, signal handlers, and the
+ * activation-time stale-directory sweep.
+ */
+export interface TempDirRegistry {
+    add(directory: string): void
+    remove(directory: string): void
+}
+
+/**
+ * In-process registry of temp directories the trackers have created. Each entry is
  * an absolute path. The registry survives across debug sessions but lives in
  * the extension host process; it is the source of truth for `deactivate` and
  * signal-handler cleanup.
  */
 export class InMemoryTempDirRegistry implements TempDirRegistry {
-    private readonly dirs = new Set<string>()
+    private readonly directories = new Set<string>()
 
-    add(dir: string): void {
-        this.dirs.add(dir)
+    add(directory: string): void {
+        this.directories.add(directory)
     }
 
-    remove(dir: string): void {
-        this.dirs.delete(dir)
+    remove(directory: string): void {
+        this.directories.delete(directory)
     }
 
     snapshot(): string[] {
-        const dirs = [...this.dirs]
-        return dirs
+        const directories = [...this.directories]
+        return directories
     }
 
     drain(): string[] {
-        const snapshot = [...this.dirs]
-        this.dirs.clear()
+        const snapshot = [...this.directories]
+        this.directories.clear()
         return snapshot
     }
-}
 
-/**
- * Synchronous best-effort cleanup of every dir currently in the registry.
- * Safe to call from `deactivate` and `process.on('exit'|'SIGTERM'|'SIGINT')`.
- */
-export function cleanupRegistry(registry: InMemoryTempDirRegistry): void {
-    for (const dir of registry.drain()) {
+    /**
+     * Synchronous best-effort cleanup of every directory currently in the
+     * registry. Safe to call from `deactivate` and
+     * `process.on('exit'|'SIGTERM'|'SIGINT')`.
+     */
+    cleanup(): void {
+        for (const directory of this.drain()) {
+            InMemoryTempDirRegistry.removeDirectoryQuietly(directory)
+        }
+    }
+
+    /**
+     * Synchronous best-effort recursive removal of `directory`. Never throws;
+     * shared by the tracker, the terminal env rewriter, and the registry so
+     * the swallow-and-continue removal lives in one place.
+     */
+    static removeDirectoryQuietly(directory: string): void {
         try {
-            fs.rmSync(dir, { recursive: true, force: true })
+            fs.rmSync(directory, { recursive: true, force: true })
         }
         catch {
             // best-effort
         }
     }
-}
 
-/**
- * Activation-time stale-dir sweep. Scans `os.tmpdir()` for
- * `secret-resolver-*` entries left behind by crashed VS Code instances and
- * removes those whose owning PID (recorded in a `.pid` file) is no longer
- * alive. Dirs without a `.pid` file are left alone (we can't tell ownership
- * safely). Wrapped end-to-end so a failing sweep never blocks activation.
- */
-export function sweepStaleTempDirs(): void {
-    try {
-        const root = os.tmpdir()
-        const entries = fs.readdirSync(root, { withFileTypes: true })
+    /**
+     * Activation-time stale-directory sweep. Scans `os.tmpdir()` for
+     * `secret-resolver-*` entries left behind by crashed VS Code instances and
+     * removes those whose owning PID (recorded in a `.pid` file) is no longer
+     * alive. Dirs without a `.pid` file are left alone (we can't tell ownership
+     * safely). Wrapped end-to-end so a failing sweep never blocks activation.
+     */
+    static sweepStale(): void {
+        try {
+            const root = os.tmpdir()
+            const entries = fs.readdirSync(root, { withFileTypes: true })
 
-        for (const entry of entries) {
-            if (!entry.isDirectory() || !entry.name.startsWith(TEMP_DIR_PREFIX)) {
-                continue
-            }
-
-            const dir = path.join(root, entry.name)
-            const pidPath = path.join(dir, ".pid")
-            let pid: number | undefined
-
-            try {
-                const raw = fs.readFileSync(pidPath, "utf8").trim()
-                const parsed = Number.parseInt(raw, 10)
-
-                if (Number.isInteger(parsed) && parsed > 0) {
-                    pid = parsed
+            for (const entry of entries) {
+                if (!entry.isDirectory() || !entry.name.startsWith(TEMP_DIR_PREFIX)) {
+                    continue
                 }
-            }
-            catch {
-                continue
-            }
 
-            if (pid === undefined || isPidAlive(pid)) {
-                continue
-            }
+                const directory = path.join(root, entry.name)
+                const pidPath = path.join(directory, ".pid")
+                let pid: number | undefined
 
-            try {
-                fs.rmSync(dir, { recursive: true, force: true })
-            }
-            catch {
-                // best-effort
+                try {
+                    const raw = fs.readFileSync(pidPath, "utf8").trim()
+                    const parsed = Number.parseInt(raw, 10)
+
+                    if (Number.isInteger(parsed) && parsed > 0) {
+                        pid = parsed
+                    }
+                }
+                catch {
+                    continue
+                }
+
+                if (pid === undefined || InMemoryTempDirRegistry.isPidAlive(pid)) {
+                    continue
+                }
+
+                InMemoryTempDirRegistry.removeDirectoryQuietly(directory)
             }
         }
+        catch {
+            // best-effort
+        }
     }
-    catch {
-        // best-effort
-    }
-}
 
-function isPidAlive(pid: number): boolean {
-    try {
-        process.kill(pid, 0)
-        return true
-    }
-    catch (err) {
-        const code = (err as NodeJS.ErrnoException).code
-
-        if (code === "EPERM") {
+    private static isPidAlive(pid: number): boolean {
+        try {
+            process.kill(pid, 0)
             return true
         }
+        catch (err) {
+            const code = (err as NodeJS.ErrnoException).code
 
-        return false
+            if (code === "EPERM") {
+                return true
+            }
+
+            return false
+        }
     }
 }

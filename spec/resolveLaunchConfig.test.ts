@@ -1,10 +1,19 @@
 import * as assert from "node:assert"
 
-import { MODE_VAR, SIGNAL_ON_STOP_VAR, type StringEnvMap, TOKEN_TAG_VAR } from "../src/envHelpers"
-import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, type OpInjectOptions } from "../src/opRunner"
-import { type ResolveDeps, resolveLaunchConfig } from "../src/resolveLaunchConfig"
+import { type AccountResolverFactory, NullAccountResolver } from "../src/accountResolver"
+import {
+    OpCliNotFoundError,
+    OpInjectAbortedError,
+    OpInjectError,
+    type OpInjectOptions,
+    OpRunner,
+} from "../src/opRunner"
+import { type EnvFileReader, LaunchConfigResolver } from "../src/resolveLaunchConfig"
+import { ResolverCache } from "../src/resolverCache"
 import { SecretCache } from "../src/secretCache"
 import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../src/sessionConfig"
+import { NullTokenResolver, type TokenResolverFactory } from "../src/tokenResolver"
+import type { UserNotifier } from "../src/userNotifier"
 
 class FakeRunner {
     readonly opPath = "fake"
@@ -27,24 +36,22 @@ interface Recorder {
     warnings: string[]
 }
 
-function makeDeps(opts: {
+function makeResolver(options: {
     runner?: FakeRunner
     cache?: SecretCache
-    files?: Record<string, StringEnvMap>
+    files?: Record<string, Record<string, string>>
     resolveTokenForTag?: (tag: string, signal?: AbortSignal, account?: string) => Promise<string>
     resolveAccountForEmail?: (email: string, signal?: AbortSignal) => Promise<string>
-    resolveAccountForGitConfig?: (subdir: string, signal?: AbortSignal) => Promise<string>
-}): { deps: ResolveDeps; recorder: Recorder; cache: SecretCache } {
+    resolveAccountForGitConfig?: (subdirectory: string, signal?: AbortSignal) => Promise<string>
+    workspaceTrusted?: boolean
+}): { resolver: LaunchConfigResolver; recorder: Recorder; cache: SecretCache } {
     const recorder: Recorder = { errors: [], warnings: [] }
-    const cache = opts.cache ?? new SecretCache()
-    const runner = opts.runner ?? new FakeRunner()
-    const files = opts.files ?? {}
-    const deps: ResolveDeps = {
-        cache,
-        // FakeRunner satisfies the structural shape ResolveDeps.runner requires
-        // (opPath + inject). Cast needed because FakeRunner omits the list/get methods.
-        runner: runner as unknown as ResolveDeps["runner"],
-        parseEnvFile: async (p: string) => {
+    const cache = options.cache ?? new SecretCache()
+    const runner = options.runner ?? new FakeRunner()
+    const files = options.files ?? {}
+
+    const envFileReader: EnvFileReader = {
+        parse: async (p: string) => {
             if (p in files) {
                 return files[p]
             }
@@ -54,42 +61,72 @@ function makeDeps(opts: {
             )
             throw new EnvFileNotFoundError(p)
         },
-        showError: (m) => {
-            recorder.errors.push(m)
-        },
-        showWarning: (m) => {
-            recorder.warnings.push(m)
-        },
-        resolveTokenForTag: opts.resolveTokenForTag,
-        resolveAccountForEmail: opts.resolveAccountForEmail,
-        resolveAccountForGitConfig: opts.resolveAccountForGitConfig,
     }
 
-    return { deps, recorder, cache }
+    const notifier: UserNotifier = {
+        showError: (message) => {
+            recorder.errors.push(message)
+        },
+        showWarning: (message) => {
+            recorder.warnings.push(message)
+        },
+    }
+
+    const accountResolverFactory: AccountResolverFactory = {
+        createForEmail: options.resolveAccountForEmail !== undefined
+            ? (email) => ({ resolve: (signal?: AbortSignal) => options.resolveAccountForEmail!(email, signal) })
+            : () => new NullAccountResolver(),
+        createForGitConfig: options.resolveAccountForGitConfig !== undefined
+            ? (subdirectory, _workspacePath) => ({
+                resolve: (signal?: AbortSignal) => options.resolveAccountForGitConfig!(subdirectory, signal),
+            })
+            : (_subdirectory, _workspacePath) => new NullAccountResolver(),
+    }
+
+    const tokenResolverFactory: TokenResolverFactory = {
+        createForTag: options.resolveTokenForTag !== undefined
+            ? (tag) => ({
+                resolve: (accountId: string | undefined, signal?: AbortSignal) =>
+                    options.resolveTokenForTag!(tag, signal, accountId),
+            })
+            : () => new NullTokenResolver(),
+    }
+
+    const resolver = new LaunchConfigResolver(
+        new ResolverCache(cache),
+        runner as unknown as OpRunner,
+        envFileReader,
+        notifier,
+        accountResolverFactory,
+        tokenResolverFactory,
+        { isTrusted: () => options.workspaceTrusted ?? true },
+    )
+
+    return { resolver, recorder, cache }
 }
 
-suite("resolveLaunchConfig", () => {
+suite("LaunchConfigResolver", () => {
     test("returns config unchanged when neither env nor envFile is present", async () => {
-        const { deps } = makeDeps({})
+        const { resolver } = makeResolver({})
         const config = { type: "node", name: "x", request: "launch" }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result, config)
     })
 
     test("returns config unchanged for non-map env shapes", async () => {
-        const { deps } = makeDeps({})
+        const { resolver } = makeResolver({})
         const config = {
             type: "cppdbg",
             name: "x",
             request: "launch",
             environment: [{ name: "DB", value: "op://x/y/z" }],
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result, config)
     })
 
     test("strips SECRET_RESOLVER_* keys even when no refs are present", async () => {
-        const { deps } = makeDeps({})
+        const { resolver } = makeResolver({})
         const config = {
             type: "node",
             name: "x",
@@ -100,7 +137,7 @@ suite("resolveLaunchConfig", () => {
                 SECRET_RESOLVER_MODE: "cache",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result?.env, { KEEP: "yes" })
     })
 
@@ -110,7 +147,7 @@ suite("resolveLaunchConfig", () => {
             ["op://v/i/db", "DB-VALUE"],
             ["op://v/i/api", "API-VALUE"],
         ])
-        const { deps } = makeDeps({ runner })
+        const { resolver } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
@@ -121,7 +158,7 @@ suite("resolveLaunchConfig", () => {
                 PLAIN: "literal",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result?.env, {
             DB: "DB-VALUE",
             API: "API-VALUE",
@@ -137,7 +174,7 @@ suite("resolveLaunchConfig", () => {
         const cache = new SecretCache()
         const runner = new FakeRunner()
         runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
-        const { deps } = makeDeps({ runner, cache })
+        const { resolver } = makeResolver({ runner, cache })
 
         const config = {
             type: "node",
@@ -145,9 +182,9 @@ suite("resolveLaunchConfig", () => {
             request: "launch",
             env: { DB: "op://v/i/db" },
         }
-        await resolveLaunchConfig(config, deps)
+        await resolver.resolve(config, undefined)
         runner.nextResult = new Map() // would resolve nothing on a second call
-        const second = await resolveLaunchConfig(config, deps)
+        const second = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(second?.env, { DB: "DB-VALUE" })
         assert.strictEqual(runner.calls.length, 1)
     })
@@ -158,7 +195,7 @@ suite("resolveLaunchConfig", () => {
             ["op://v/i/inline", "INLINE-VALUE"],
             ["op://v/i/file", "FILE-VALUE"],
         ])
-        const { deps } = makeDeps({
+        const { resolver } = makeResolver({
             runner,
             files: {
                 "/tmp/.env": {
@@ -174,7 +211,7 @@ suite("resolveLaunchConfig", () => {
             env: { SHARED: "from-inline", INLINE_ONLY: "op://v/i/inline" },
             envFile: "/tmp/.env",
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result?.env, {
             SHARED: "from-inline",
             FILE_ONLY: "FILE-VALUE",
@@ -187,7 +224,7 @@ suite("resolveLaunchConfig", () => {
     })
 
     test("warns and continues on missing envFile", async () => {
-        const { deps, recorder } = makeDeps({})
+        const { resolver, recorder } = makeResolver({})
         const config = {
             type: "node",
             name: "x",
@@ -195,15 +232,15 @@ suite("resolveLaunchConfig", () => {
             env: { K: "v" },
             envFile: "/no/such/.env",
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result?.env, { K: "v" })
         assert.strictEqual(recorder.warnings.length, 1)
         assert.match(recorder.warnings[0], /envFile not found/)
         assert.strictEqual(recorder.errors.length, 0)
     })
 
-    test("routes invalid parser values through launch warnings", async () => {
-        const { deps, recorder } = makeDeps({})
+    test("routes invalid signal-on-stop values through launch warnings", async () => {
+        const { resolver, recorder } = makeResolver({})
         const config = {
             type: "node",
             name: "x",
@@ -211,24 +248,23 @@ suite("resolveLaunchConfig", () => {
             console: "integratedTerminal",
             env: {
                 KEEP: "yes",
-                [MODE_VAR]: "wat",
-                [SIGNAL_ON_STOP_VAR]: "TERM+NOPE",
+                SECRET_RESOLVER_SIGNAL_ON_STOP: "TERM+NOPE",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result?.env, { KEEP: "yes" })
-        assert.strictEqual(recorder.warnings.length, 2)
-        assert.match(recorder.warnings[0], /unknown SECRET_RESOLVER_MODE/)
-        assert.match(recorder.warnings[1], /unknown signal/)
+        assert.strictEqual(recorder.warnings.length, 1)
+        assert.match(recorder.warnings[0], /invalid SECRET_RESOLVER_SIGNAL_ON_STOP/)
         assert.strictEqual(
             SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
             false,
         )
     })
 
-    test("op-run mode: terminal console + MODE=op leaves refs intact", async () => {
+    test("SECRET_RESOLVER_MODE is ignored: terminal console resolves refs via op inject", async () => {
         const runner = new FakeRunner()
-        const { deps } = makeDeps({ runner })
+        runner.nextResult = new Map([["op://v/i/db", "RESOLVED"]])
+        const { resolver } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
@@ -239,14 +275,15 @@ suite("resolveLaunchConfig", () => {
                 SECRET_RESOLVER_MODE: "op",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
-        assert.deepStrictEqual(result?.env, { DB: "op://v/i/db" })
-        assert.strictEqual(runner.calls.length, 0)
+        const result = await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(result?.env, { DB: "RESOLVED" })
+        assert.strictEqual(runner.calls.length, 1)
     })
 
-    test("MODE=op + internalConsole aborts with an error", async () => {
+    test("SECRET_RESOLVER_MODE=op + internalConsole no longer aborts; resolves via op inject", async () => {
         const runner = new FakeRunner()
-        const { deps, recorder } = makeDeps({ runner })
+        runner.nextResult = new Map([["op://v/i/db", "RESOLVED"]])
+        const { resolver, recorder } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
@@ -257,28 +294,7 @@ suite("resolveLaunchConfig", () => {
                 SECRET_RESOLVER_MODE: "op",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
-        assert.strictEqual(result, undefined)
-        assert.strictEqual(runner.calls.length, 0)
-        assert.strictEqual(recorder.errors.length, 1)
-        assert.match(
-            recorder.errors[0],
-            /SECRET_RESOLVER_MODE="op".*internalConsole/,
-        )
-    })
-
-    test("default (unset) MODE + internalConsole resolves via op inject (cache default)", async () => {
-        const runner = new FakeRunner()
-        runner.nextResult = new Map([["op://v/i/db", "RESOLVED"]])
-        const { deps, recorder } = makeDeps({ runner })
-        const config = {
-            type: "node",
-            name: "x",
-            request: "launch",
-            console: "internalConsole",
-            env: { DB: "op://v/i/db" },
-        }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result?.env, { DB: "RESOLVED" })
         assert.strictEqual(runner.calls.length, 1)
         assert.strictEqual(recorder.errors.length, 0)
@@ -287,7 +303,7 @@ suite("resolveLaunchConfig", () => {
     test("MODE=cache + internalConsole resolves via op inject", async () => {
         const runner = new FakeRunner()
         runner.nextResult = new Map([["op://v/i/db", "RESOLVED"]])
-        const { deps } = makeDeps({ runner })
+        const { resolver } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
@@ -298,14 +314,14 @@ suite("resolveLaunchConfig", () => {
                 SECRET_RESOLVER_MODE: "cache",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result?.env, { DB: "RESOLVED" })
     })
 
     test("cache mode is the default for terminal consoles when MODE is unset", async () => {
         const runner = new FakeRunner()
         runner.nextResult = new Map([["op://v/i/db", "RESOLVED"]])
-        const { deps } = makeDeps({ runner })
+        const { resolver } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
@@ -313,40 +329,22 @@ suite("resolveLaunchConfig", () => {
             console: "integratedTerminal",
             env: { DB: "op://v/i/db" },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result?.env, { DB: "RESOLVED" })
         assert.strictEqual(runner.calls.length, 1)
-    })
-
-    test("MODE=op on a terminal console leaves refs intact", async () => {
-        const runner = new FakeRunner()
-        const { deps } = makeDeps({ runner })
-        const config = {
-            type: "node",
-            name: "x",
-            request: "launch",
-            console: "integratedTerminal",
-            env: {
-                DB: "op://v/i/db",
-                SECRET_RESOLVER_MODE: "op",
-            },
-        }
-        const result = await resolveLaunchConfig(config, deps)
-        assert.deepStrictEqual(result?.env, { DB: "op://v/i/db" })
-        assert.strictEqual(runner.calls.length, 0)
     })
 
     test("aborts the launch when op inject returns ENOENT", async () => {
         const runner = new FakeRunner()
         runner.nextResult = new OpCliNotFoundError("/no/op")
-        const { deps, recorder } = makeDeps({ runner })
+        const { resolver, recorder } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
             request: "launch",
             env: { DB: "op://v/i/db" },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.strictEqual(result, undefined)
         assert.strictEqual(recorder.errors.length, 1)
         assert.match(recorder.errors[0], /1Password CLI not found/)
@@ -359,14 +357,14 @@ suite("resolveLaunchConfig", () => {
             "not signed in",
             1,
         )
-        const { deps, recorder } = makeDeps({ runner })
+        const { resolver, recorder } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
             request: "launch",
             env: { DB: "op://v/i/db" },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.strictEqual(result, undefined)
         assert.match(recorder.errors[0], /op inject failed: not signed in/)
     })
@@ -374,14 +372,14 @@ suite("resolveLaunchConfig", () => {
     test("aborts silently (no error UI) when the resolution is cancelled", async () => {
         const runner = new FakeRunner()
         runner.nextResult = new OpInjectAbortedError()
-        const { deps, recorder } = makeDeps({ runner })
+        const { resolver, recorder } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
             request: "launch",
             env: { DB: "op://v/i/db" },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.strictEqual(result, undefined)
         assert.strictEqual(recorder.errors.length, 0)
     })
@@ -389,7 +387,7 @@ suite("resolveLaunchConfig", () => {
     test("aborts when op inject does not return all requested refs", async () => {
         const runner = new FakeRunner()
         runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
-        const { deps, recorder } = makeDeps({ runner })
+        const { resolver, recorder } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
@@ -399,13 +397,13 @@ suite("resolveLaunchConfig", () => {
                 API: "op://v/i/api",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.strictEqual(result, undefined)
         assert.match(recorder.errors[0], /did not return values for/)
     })
 
     test("attaches __secretResolver session config when SIGNAL_ON_STOP is set on a terminal launch", async () => {
-        const { deps } = makeDeps({})
+        const { resolver } = makeResolver({})
         const config = {
             type: "node",
             name: "x",
@@ -416,7 +414,7 @@ suite("resolveLaunchConfig", () => {
                 SECRET_RESOLVER_SIGNAL_ON_STOP: "TERM+5:KILL",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.ok(result)
 
         const sessionConfig = (result as Record<string, unknown>)[
@@ -433,7 +431,7 @@ suite("resolveLaunchConfig", () => {
     })
 
     test("uses DEFAULT_STEP_DELAY_SECONDS when no explicit delay between steps", async () => {
-        const { deps } = makeDeps({})
+        const { resolver } = makeResolver({})
         const config = {
             type: "node",
             name: "x",
@@ -444,7 +442,7 @@ suite("resolveLaunchConfig", () => {
                 SECRET_RESOLVER_SIGNAL_ON_STOP: "TERM+KILL",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         const sessionConfig = (result as Record<string, unknown>)[
             SECRET_RESOLVER_CONFIG_FIELD
         ] as SecretResolverSessionConfig | undefined
@@ -457,7 +455,7 @@ suite("resolveLaunchConfig", () => {
     })
 
     test("does not attach __secretResolver when SIGNAL_ON_STOP is unset", async () => {
-        const { deps } = makeDeps({})
+        const { resolver } = makeResolver({})
         const config = {
             type: "node",
             name: "x",
@@ -465,7 +463,7 @@ suite("resolveLaunchConfig", () => {
             console: "integratedTerminal",
             env: { FOO: "bar" },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.ok(result)
         assert.strictEqual(
             SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
@@ -474,7 +472,7 @@ suite("resolveLaunchConfig", () => {
     })
 
     test("does not attach __secretResolver when SIGNAL_ON_STOP is 'off'", async () => {
-        const { deps } = makeDeps({})
+        const { resolver } = makeResolver({})
         const config = {
             type: "node",
             name: "x",
@@ -485,7 +483,7 @@ suite("resolveLaunchConfig", () => {
                 SECRET_RESOLVER_SIGNAL_ON_STOP: "off",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.ok(result)
         assert.strictEqual(
             SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
@@ -493,10 +491,10 @@ suite("resolveLaunchConfig", () => {
         )
     })
 
-    test("does not attach __secretResolver for internalConsole", async () => {
+    test("attaches __secretResolver for internalConsole when signal steps are configured", async () => {
         const runner = new FakeRunner()
         runner.nextResult = new Map()
-        const { deps } = makeDeps({ runner })
+        const { resolver } = makeResolver({ runner })
         const config = {
             type: "node",
             name: "x",
@@ -507,16 +505,21 @@ suite("resolveLaunchConfig", () => {
                 SECRET_RESOLVER_SIGNAL_ON_STOP: "TERM+KILL",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.ok(result)
-        assert.strictEqual(
-            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
-            false,
-        )
+        const sessionConfig = (result as Record<string, unknown>)[
+            SECRET_RESOLVER_CONFIG_FIELD
+        ] as SecretResolverSessionConfig | undefined
+        assert.deepStrictEqual(sessionConfig, {
+            steps: [
+                { delaySec: 0, signal: "TERM" },
+                { delaySec: 30, signal: "KILL" },
+            ],
+        })
     })
 
     test("ACCOUNT_EMAIL_VAR resolves plain email address and strips var from env", async () => {
-        const { deps } = makeDeps({
+        const { resolver } = makeResolver({
             resolveAccountForEmail: async () => "acct-uuid-from-email",
         })
         const config = {
@@ -526,7 +529,7 @@ suite("resolveLaunchConfig", () => {
             console: "integratedTerminal",
             env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com" },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.ok(result)
         assert.ok(!("SECRET_RESOLVER_ACCOUNT_EMAIL" in (result!.env as Record<string, unknown>)))
         const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
@@ -537,9 +540,9 @@ suite("resolveLaunchConfig", () => {
 
     test("ACCOUNT_GIT_CONFIG_VAR resolves via resolveAccountForGitConfig and strips var from env", async () => {
         const gitConfigCalls: string[] = []
-        const { deps } = makeDeps({
-            resolveAccountForGitConfig: async (subdir) => {
-                gitConfigCalls.push(subdir)
+        const { resolver } = makeResolver({
+            resolveAccountForGitConfig: async (subdirectory) => {
+                gitConfigCalls.push(subdirectory)
                 return "acct-uuid-from-git"
             },
         })
@@ -550,7 +553,7 @@ suite("resolveLaunchConfig", () => {
             console: "integratedTerminal",
             env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: "." },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.ok(result)
         assert.ok(!("SECRET_RESOLVER_ACCOUNT_GIT_CONFIG" in (result!.env as Record<string, unknown>)))
         assert.deepStrictEqual(gitConfigCalls, ["."])
@@ -562,9 +565,9 @@ suite("resolveLaunchConfig", () => {
 
     test("empty ACCOUNT_GIT_CONFIG_VAR is treated as off", async () => {
         const gitConfigCalls: string[] = []
-        const { deps } = makeDeps({
-            resolveAccountForGitConfig: async (subdir) => {
-                gitConfigCalls.push(subdir)
+        const { resolver } = makeResolver({
+            resolveAccountForGitConfig: async (subdirectory) => {
+                gitConfigCalls.push(subdirectory)
                 return "acct-uuid-from-git"
             },
         })
@@ -575,19 +578,19 @@ suite("resolveLaunchConfig", () => {
             console: "integratedTerminal",
             env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: "" },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.ok(result)
         assert.strictEqual(gitConfigCalls.length, 0)
     })
 
-    test("ACCOUNT_EMAIL_VAR takes priority over ACCOUNT_GIT_CONFIG_VAR", async () => {
-        const gitConfigCalls: string[] = []
-        const { deps } = makeDeps({
-            resolveAccountForEmail: async () => "acct-uuid-from-email",
-            resolveAccountForGitConfig: async (subdir) => {
-                gitConfigCalls.push(subdir)
-                return "acct-uuid-from-git"
+    test("ACCOUNT_GIT_CONFIG_VAR takes priority over ACCOUNT_EMAIL_VAR", async () => {
+        const emailCalls: string[] = []
+        const { resolver } = makeResolver({
+            resolveAccountForEmail: async (email) => {
+                emailCalls.push(email)
+                return "acct-uuid-from-email"
             },
+            resolveAccountForGitConfig: async () => "acct-uuid-from-git",
         })
         const config = {
             type: "node",
@@ -599,17 +602,17 @@ suite("resolveLaunchConfig", () => {
                 SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: ".",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.ok(result)
-        assert.strictEqual(gitConfigCalls.length, 0)
+        assert.strictEqual(emailCalls.length, 0)
         const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
             | SecretResolverSessionConfig
             | undefined
-        assert.strictEqual(sessionConfig?.accountId, "acct-uuid-from-email")
+        assert.strictEqual(sessionConfig?.accountId, "acct-uuid-from-git")
     })
 
     test("error from resolveAccountForGitConfig aborts launch with error message", async () => {
-        const { deps, recorder } = makeDeps({
+        const { resolver, recorder } = makeResolver({
             resolveAccountForGitConfig: async () => {
                 throw new Error("no matching 1Password account")
             },
@@ -621,7 +624,7 @@ suite("resolveLaunchConfig", () => {
             console: "integratedTerminal",
             env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: "." },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.strictEqual(result, undefined)
         assert.strictEqual(recorder.errors.length, 1)
         assert.match(recorder.errors[0], /no matching 1Password account/)
@@ -629,7 +632,7 @@ suite("resolveLaunchConfig", () => {
 
     test("does not resolve service account token when stripped env has no op refs", async () => {
         let tokenCalls = 0
-        const { deps } = makeDeps({
+        const { resolver } = makeResolver({
             resolveTokenForTag: async () => {
                 tokenCalls++
                 return "tok"
@@ -642,15 +645,129 @@ suite("resolveLaunchConfig", () => {
             console: "integratedTerminal",
             env: {
                 FOO: "bar",
-                [TOKEN_TAG_VAR]: "my-tag",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
             },
         }
-        const result = await resolveLaunchConfig(config, deps)
+        const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result?.env, { FOO: "bar" })
         assert.strictEqual(tokenCalls, 0)
         assert.strictEqual(
             SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
             false,
         )
+    })
+
+    test("re-runs op inject when a cached ref is requested under a different account", async () => {
+        const cache = new SecretCache()
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "PERSONAL-VALUE"]])
+        const { resolver } = makeResolver({ runner, cache })
+
+        await resolver.resolve(
+            { type: "node", name: "x", request: "launch", env: { DB: "op://v/i/db" } },
+            undefined,
+        )
+
+        runner.nextResult = new Map([["op://v/i/db", "WORK-VALUE"]])
+        const second = await resolver.resolve(
+            {
+                type: "node",
+                name: "x",
+                request: "launch",
+                env: {
+                    DB: "op://v/i/db",
+                    SECRET_RESOLVER_ACCOUNT_ID: "WORK_ACCOUNT",
+                },
+            },
+            undefined,
+        )
+
+        assert.strictEqual(runner.calls.length, 2)
+        assert.deepStrictEqual(second?.env, { DB: "WORK-VALUE" })
+    })
+
+    test("re-runs op inject when a cached ref is requested under a different token tag", async () => {
+        const cache = new SecretCache()
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "UNTAGGED-VALUE"]])
+        const { resolver } = makeResolver({
+            runner,
+            cache,
+            resolveTokenForTag: async () => "tok",
+        })
+
+        await resolver.resolve(
+            { type: "node", name: "x", request: "launch", env: { DB: "op://v/i/db" } },
+            undefined,
+        )
+
+        runner.nextResult = new Map([["op://v/i/db", "TAGGED-VALUE"]])
+        const second = await resolver.resolve(
+            {
+                type: "node",
+                name: "x",
+                request: "launch",
+                env: {
+                    DB: "op://v/i/db",
+                    SECRET_RESOLVER_TOKEN_TAG: "ci-tag",
+                },
+            },
+            undefined,
+        )
+
+        assert.strictEqual(runner.calls.length, 2)
+        assert.deepStrictEqual(second?.env, { DB: "TAGGED-VALUE" })
+    })
+
+    test("removes a pre-existing __secretResolver field from the incoming config", async () => {
+        const { resolver } = makeResolver({})
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            env: { FOO: "bar" },
+            [SECRET_RESOLVER_CONFIG_FIELD]: { steps: [{ delaySec: 0, signal: "KILL" }] },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.ok(result)
+        assert.strictEqual(SECRET_RESOLVER_CONFIG_FIELD in result!, false)
+        assert.deepStrictEqual(result?.env, { FOO: "bar" })
+    })
+
+    test("removes a pre-existing __secretResolver field even when no env is present", async () => {
+        const { resolver } = makeResolver({})
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            [SECRET_RESOLVER_CONFIG_FIELD]: { steps: [{ delaySec: 0, signal: "KILL" }] },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.ok(result)
+        assert.strictEqual(SECRET_RESOLVER_CONFIG_FIELD in result!, false)
+    })
+
+    test("aborts with an error when the workspace is not trusted and env is present", async () => {
+        const runner = new FakeRunner()
+        const { resolver, recorder } = makeResolver({ runner, workspaceTrusted: false })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            env: { DB: "op://v/i/db" },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.strictEqual(result, undefined)
+        assert.strictEqual(runner.calls.length, 0)
+        assert.strictEqual(recorder.errors.length, 1)
+        assert.match(recorder.errors[0], /not trusted/)
+    })
+
+    test("returns config unchanged in an untrusted workspace when there is no env to resolve", async () => {
+        const { resolver, recorder } = makeResolver({ workspaceTrusted: false })
+        const config = { type: "node", name: "x", request: "launch" }
+        const result = await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(result, config)
+        assert.strictEqual(recorder.errors.length, 0)
     })
 })

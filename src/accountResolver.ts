@@ -1,10 +1,8 @@
 import * as path from "node:path"
 
-import { getCachedAccountId, setCachedAccountId } from "./resolverCache"
-
 import { GitRunner } from "./gitRunner"
-import { type OpAccount, OpRunner } from "./opRunner"
-import type { SecretCache } from "./secretCache"
+import { OpRunner } from "./opRunner"
+import { ResolverCache } from "./resolverCache"
 
 export { GitEmailNotFoundError } from "./gitRunner"
 
@@ -15,95 +13,118 @@ export class AccountNotFoundError extends Error {
     }
 }
 
-/**
- * Injected by `configProvider.ts`, backed by `workspaceState`. Caches the
- * git-directory → email mapping so `git config` is not re-run every launch.
- * Persistence is best-effort: callers should not depend on `set`/`clear`
- * completing before the current launch continues.
- */
-export interface GitEmailStore {
-    get(dir: string): string | undefined
-    set(dir: string, email: string): void
-    clear(): void
-}
-
-async function findAccountByEmail(
-    email: string,
-    runner: OpRunner,
-    signal: AbortSignal | undefined,
-): Promise<string> {
-    const accounts = await runner.listAccounts({ signal })
-    const lower = email.toLowerCase()
-    const match = accounts.find(
-        (a): a is OpAccount & { accountUuid: string } =>
-            a.email.toLowerCase() === lower && a.accountUuid !== "",
-    )
-
-    if (match === undefined) {
-        throw new AccountNotFoundError(email)
-    }
-
-    const uuid = match.accountUuid
-    return uuid
+export abstract class AccountResolver {
+    abstract resolve(signal?: AbortSignal): Promise<string | null>
 }
 
 /**
- * Resolves a 1Password `account_uuid` from a plain email address.
- * Caches the result in the account namespace of `cache`.
+ * Creates account resolvers for the launch-planning code. Implemented by the
+ * `vscode`-aware config provider so `LaunchConfigResolver` stays constructible
+ * in unit tests without the extension host.
  */
-export async function resolveAccountForEmail(
-    email: string,
-    runner: OpRunner,
-    cache: SecretCache,
-    signal?: AbortSignal,
-): Promise<string> {
-    const cachedUuid = getCachedAccountId(cache, email)
+export interface AccountResolverFactory {
+    createForEmail(email: string): AccountResolver
+    createForGitConfig(
+        subdirectory: string,
+        workspacePath: string | undefined,
+    ): AccountResolver
+}
 
-    if (cachedUuid !== undefined) {
-        return cachedUuid
+export class NullAccountResolver extends AccountResolver {
+    async resolve(_signal?: AbortSignal): Promise<null> {
+        return null
+    }
+}
+
+export class LiteralAccountResolver extends AccountResolver {
+    constructor(private readonly accountId: string) {
+        super()
     }
 
-    const uuid = await findAccountByEmail(email, runner, signal)
-    setCachedAccountId(cache, email, uuid)
-    return uuid
+    async resolve(_signal?: AbortSignal): Promise<string> {
+        return this.accountId
+    }
+}
+
+/**
+ * Resolves a 1Password `account_uuid` from a plain email address, caching the
+ * result in the account namespace of `ResolverCache`.
+ */
+export class EmailAccountResolver extends AccountResolver {
+    constructor(
+        private readonly email: string,
+        private readonly runner: OpRunner,
+        private readonly cache: ResolverCache,
+    ) {
+        super()
+    }
+
+    async resolve(signal?: AbortSignal): Promise<string> {
+        const cachedUuid = this.cache.getAccountId(this.email)
+
+        if (cachedUuid !== null) {
+            return cachedUuid
+        }
+
+        const uuid = await this.findAccountByEmail(signal)
+        this.cache.setAccountId(this.email, uuid)
+        return uuid
+    }
+
+    private async findAccountByEmail(signal: AbortSignal | undefined): Promise<string> {
+        const accounts = await this.runner.listAccounts({ signal })
+        const lowerEmail = this.email.toLowerCase()
+        const match = accounts.find(
+            (account) => account.email.toLowerCase() === lowerEmail,
+        )
+
+        if (match === undefined) {
+            throw new AccountNotFoundError(this.email)
+        }
+
+        const uuid = match.accountUuid
+        return uuid
+    }
 }
 
 /**
  * Resolves a 1Password `account_uuid` by reading `user.email` from git config
- * at `workspacePath/subdir`, then looking up the matching account.
- *
- * Layer 1 cache: `gitEmailStore` maps `.git`-dir → email (persisted in
- * `workspaceState`; avoids calling git on every launch).
- * Layer 2 cache: `cache` maps email → account_uuid (in-memory `SecretCache`).
+ * at `workspacePath/subdirectory`, then delegating to `EmailAccountResolver`.
+ * `git config` runs on every launch — the email is not cached; the resolved
+ * email → account_uuid mapping is cached in `ResolverCache`. `subdirectory`
+ * must be relative (`.` = workspace root) and must resolve to a path below
+ * the workspace (no `..` traversal outside it).
  */
-export async function resolveAccountForGitConfig(
-    subdir: string,
-    runner: OpRunner,
-    gitRunner: GitRunner,
-    cache: SecretCache,
-    signal?: AbortSignal,
-    workspacePath?: string,
-    gitEmailStore?: GitEmailStore,
-): Promise<string> {
-    if (path.isAbsolute(subdir)) {
-        throw new Error(
-            `SECRET_RESOLVER_ACCOUNT_GIT_CONFIG must be a relative path, got "${subdir}".`,
-        )
+export class GitConfigAccountResolver extends AccountResolver {
+    constructor(
+        private readonly subdirectory: string,
+        private readonly runner: OpRunner,
+        private readonly gitRunner: GitRunner,
+        private readonly cache: ResolverCache,
+        private readonly workspacePath?: string,
+    ) {
+        super()
     }
 
-    const workDir = path.resolve(workspacePath ?? ".", subdir)
-    const gitDir = path.join(workDir, ".git")
+    async resolve(signal?: AbortSignal): Promise<string> {
+        if (path.isAbsolute(this.subdirectory)) {
+            throw new Error(
+                `SECRET_RESOLVER_ACCOUNT_GIT_CONFIG must be a relative path, got "${this.subdirectory}".`,
+            )
+        }
 
-    const cachedEmail = gitEmailStore?.get(gitDir)
-    let email: string
+        const workspaceRoot = path.resolve(this.workspacePath ?? ".")
+        const workingDirectory = path.resolve(workspaceRoot, this.subdirectory)
+        const relative = path.relative(workspaceRoot, workingDirectory)
 
-    if (cachedEmail !== undefined) {
-        email = cachedEmail
+        if (relative === ".." || relative.startsWith(`..${path.sep}`)) {
+            throw new Error(
+                `SECRET_RESOLVER_ACCOUNT_GIT_CONFIG must resolve to a path below the workspace, got "${this.subdirectory}".`,
+            )
+        }
+
+        const email = await this.gitRunner.getEmail(workingDirectory, signal)
+        const accountId = await new EmailAccountResolver(email, this.runner, this.cache).resolve(signal)
+        return accountId
     }
-    else {
-        email = await gitRunner.getEmail(workDir, signal)
-        gitEmailStore?.set(gitDir, email)
-    }
-
-    return resolveAccountForEmail(email, runner, cache, signal)
 }

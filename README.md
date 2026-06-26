@@ -39,43 +39,39 @@ All per-launch configuration is done through `SECRET_RESOLVER_*` environment
 variables in `env` or `envFile`. We strip every one of them before the program
 sees its environment, so they are truly launch-only metadata.
 
-### Mode (`SECRET_RESOLVER_MODE`)
+### How secrets are resolved
 
-There are two ways we can resolve `op://` references — `cache` mode and `op`
-mode. The default mode is `cache`. To force a specific mode:
+Every `op://` reference is resolved in-process by running `op inject`. The
+resolved plaintext is cached (obfuscated in memory) for the rest of the VS Code
+session. Cached values are scoped to the 1Password account and service-account
+token tag they were resolved under, so two launches pinned to different
+accounts that reference the same `op://` path each get their own resolution.
+This happens inside a proper `DebugConfigurationProvider`, so no API contract
+is violated.
 
-```json
-{
-    "console": "integratedTerminal",
-    "env": {
-        "SECRET_RESOLVER_MODE": "cache",
-        "DATABASE_URL": "op://Development/Database/connection-string"
-    }
-}
+For terminal consoles (`integratedTerminal` / `externalTerminal`), VSCode would
+otherwise print the resolved `env` — secrets included — on the command line. To
+avoid that, the tracker writes the env to a temporary dotenv file (mode `0600`
+inside an `0700` directory under the system temp dir) and rewrites the launch
+to:
+
+```text
+op run --env-file=<tempfile> -- <orig args>
 ```
 
-Both modes have advantages als well as disadvantages and limitations, mostly
-because to modify the launch command, we have to use VSCode's tracker API, and
-although this API is documented as observation-only, modifying the command
-actually works for `"console": "integratedTerminal"`. So we happily misuse this
-API…
+so `op run` loads the env as a pass-through and the values never appear on the
+command line. The env file holds every env var from the launch configuration —
+including ones the debug adapter does not forward to the terminal itself —
+merged with the adapter-provided entries (the adapter wins on clashes, e.g. an
+extended `NODE_OPTIONS`). We do this through VSCode's tracker API, which is
+documented as observation-only but happens to allow command rewriting — so we
+(ab)use it. Worst case, if VSCode rejects the rewrite, the launch still
+proceeds with the env visible. Note that since the secrets are already
+resolved, `op run` cannot mask them in your program's own output: if your app
+prints a secret, it shows on the console.
 
-In `cache` mode, the secrets are resolved using a proper and legal
-`DebugConfigurationProvider`, and no API contract is violated. However, when
-launching in a terminal, VSCode goes ahead and prints the env including all
-secrets on the command line, which is not exactly the smart thing to do. In
-order to mitigate this, we still try to wrap the command in `op run` to hide
-the secrets, which may or may not succeed, depending on how prickly VSCode is
-with its API. Worst case we launch, and display the env variables. Also note,
-that since the secrets are already resolved, `op run` cannot mask them in the
-command output, so if your app prints secrets, they are shown on the console
-for the world to see. No picking questionable passwords…
-
-In `op` mode, we fully depend on the misuse of the tracker API, so this only
-works with `"console": "integratedTerminal"`. The advantage then is that the
-secret resolution is done by `op run`, so the secrets never enter VSCode, and
-`op` is able to filter the output, so any secrets printed by your app are
-redacted.
+The temp file is removed when the debug session ends; crashed-session leftovers
+are swept on the next activation.
 
 To sum it up: If you are on the VSCode team and are reading this, please
 provide us with a proper API to manipulate the launch command.
@@ -104,34 +100,36 @@ When the launch contains `op://` references to resolve, we run
 references skip this lookup. The resolved token is cached for the VS Code
 session; run `Secret Resolver: Clear Cache` if you need a fresh one.
 
-For terminal-mode launches we write the token to a separate `token.env` file
-(same `0600`/`0700` temp dir as the main env file) and compose a double
-`op run` wrap to prevent VSCode from spilling your secrets on the command line:
-`op run --env-file=token.env -- op run --env-file=env -- <orig args>`. For
-`internalConsole` cache-mode launches we pass the token directly to the
-in-process `op inject` call via its child environment.
+The token is handed to the in-process `op inject` call via its child
+environment (as `OP_SERVICE_ACCOUNT_TOKEN`) — never on the command line. It
+never leaves the extension; only the already-resolved plaintext is written to
+the temp env file for terminal launches.
 
 ### Account selection
 
 If you have multiple 1Password accounts, you can pin a launch to one of them.
-We support three ways to do this, checked in priority order: by literal account
-ID, by email address, and by the git identity of a project subdirectory.
+We support three ways to do this, checked in priority order: by the git
+identity of a project subdirectory, by email address, and by a literal account
+ID. Once resolved, the account is passed as `--account <id>` to every `op` call
+for the launch (item lookup, `op inject`, and `op run`).
 
-`SECRET_RESOLVER_ACCOUNT_ID` is the most direct — give us the account shorthand
-or UUID and we pass `--account <id>` to every `op` call for this launch:
+`SECRET_RESOLVER_ACCOUNT_GIT_CONFIG` (highest priority) specifies a relative
+subdirectory path where we read `user.email` from its `.git/config`, then look
+up the matching account. Use `.` for the workspace root, or leave it empty (or
+omit the var entirely) to disable this lookup:
 
 ```json
 {
     "env": {
-        "SECRET_RESOLVER_ACCOUNT_ID": "SOME_ACCOUNT_ID",
+        "SECRET_RESOLVER_ACCOUNT_GIT_CONFIG": "packages/api",
         "DATABASE_URL": "op://Development/Database/connection-string"
     }
 }
 ```
 
-`SECRET_RESOLVER_ACCOUNT_EMAIL` does the same thing but from an email address.
-We run `op account list --format json` and match by email (case-insensitive),
-then cache the email → UUID result in `SecretCache` so we only call
+`SECRET_RESOLVER_ACCOUNT_EMAIL` looks the account up from an email address. We
+run `op account list --format json` and match by email (case-insensitive), then
+cache the email → UUID result in `SecretCache` so we only call
 `op account list` once per session:
 
 ```json
@@ -143,23 +141,22 @@ then cache the email → UUID result in `SecretCache` so we only call
 }
 ```
 
-`SECRET_RESOLVER_ACCOUNT_GIT_CONFIG` specifies a relative subdirectory path
-where we read `user.email` from its `.git/config`, then look up the matching
-account as above. Use `.` for the workspace root, or leave it empty (or omit
-the var entirely) to disable this lookup:
+`SECRET_RESOLVER_ACCOUNT_ID` (lowest priority) is the most direct — give us the
+account shorthand or UUID and we use it as-is for `--account`:
 
 ```json
 {
     "env": {
-        "SECRET_RESOLVER_ACCOUNT_GIT_CONFIG": "packages/api",
+        "SECRET_RESOLVER_ACCOUNT_ID": "SOME_ACCOUNT_ID",
         "DATABASE_URL": "op://Development/Database/connection-string"
     }
 }
 ```
 
-We cache both mappings for the session — the `.git`-dir → email lookup in
-`workspaceState`, and the email → UUID lookup in `SecretCache`. Both are
-cleared by `Secret Resolver: Clear Cache` and on extension start/stop.
+For the git-config lookup we re-read `user.email` from git on every launch — it
+is not cached. We do cache the resolved email → UUID mapping in `SecretCache`
+for the session; it is cleared by `Secret Resolver: Clear Cache` and on
+extension start/stop.
 
 ### Signal on stop (`SECRET_RESOLVER_SIGNAL_ON_STOP`)
 
@@ -192,10 +189,18 @@ SIGKILL.
 
 A few things to be aware of: we only signal on Stop, not on detach — if
 `terminateDebuggee` is `false` on the DAP `disconnect` request, we do nothing.
-We signal the direct children of the `op run` wrapper (the actual program), not
-the wrapper itself or the hosting shell. If the program exits on its own before
-the next step is due, we cancel the remaining steps. This does not apply to
+We signal every process in the launched process tree — the `op run` wrapper,
+your program, and anything they spawned — except the hosting terminal shell at
+the root, which is left alive. Each step re-walks the tree, so processes forked
+between steps are still caught. If the program exits on its own before the next
+step is due, we cancel the remaining steps. This does not apply to
 `internalConsole` launches.
+
+For `integratedTerminal` the launched process is found via the shell PID that
+VS Code reports. For `externalTerminal` VS Code reports no PID, so the
+extension locates the `op run` wrapper by its unique per-launch command line
+(via `pgrep`) and signals that process tree instead. If neither works, a
+warning is shown and nothing is signaled.
 
 ### Extension settings
 
@@ -222,17 +227,19 @@ environment.
 We try to handle secrets carefully, though there are inherent limits to what an
 in-process cache can offer.
 
-In `cache` mode, resolved values live in the VS Code extension host process for
-the duration of the session. We obfuscate them with HMAC-SHA256 cache keys and
-AES-256-GCM values using a per-session random key, and we zero the key buffer
-when the cache is cleared or the extension deactivates. This is obfuscation,
-not real encryption — the goal is to defeat heap dumps, accidental log
-disclosure, and developer-pane inspection, not a determined attacker with code
-execution in the extension host.
+Resolved values live in the VS Code extension host process for the duration of
+the session. We obfuscate them with HMAC-SHA256 cache keys and AES-256-GCM
+values using a per-session random key, and we zero the key buffer when the
+cache is cleared or the extension deactivates. This is obfuscation, not real
+encryption — the goal is to defeat heap dumps, accidental log disclosure, and
+developer-pane inspection, not a determined attacker with code execution in the
+extension host.
 
 Be aware that a malicious `launch.json` can reference any vault your signed-in
 `op` CLI can reach. The extension declares limited support in untrusted
-workspaces for this reason — only enable it in workspaces you control.
+workspaces for this reason — only enable it in workspaces you control. In an
+untrusted workspace the resolver refuses to resolve a launch environment
+outright: the launch is aborted with an error instead of resolving secrets.
 
 For terminal-mode launches the env never touches DAP `arguments.env`. We write
 it to a `0600` dotenv file inside a `0700` `mkdtemp` directory under

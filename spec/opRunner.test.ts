@@ -7,7 +7,7 @@ import { OpCliNotFoundError, OpInjectAbortedError, OpInjectError, OpRunner } fro
 
 /**
  * Writes a small POSIX shell script that mimics `op inject`. Reads the
- * file passed via `--in-file`/`-i` and, for each line matching
+ * template from the `--in-file` path and, for each line matching
  * `{{ op://... }}`, prints `RESOLVED:<ref>`. Other lines pass through.
  * Behaviors: "ok" resolves, "fail" exits non-zero, "slow" sleeps.
  * When `argLogFile` is set, the fake appends `$@` to that file.
@@ -31,14 +31,10 @@ async function makeFakeOp(
                 "in_file=\"\"",
                 "while [[ $# -gt 0 ]]; do",
                 "  case \"$1\" in",
-                "    --in-file|-i) in_file=\"$2\"; shift 2 ;;",
+                "    --in-file) in_file=\"$2\"; shift 2 ;;",
                 "    *) shift ;;",
                 "  esac",
                 "done",
-                "if [[ -z \"$in_file\" ]]; then",
-                "  echo 'fake op: missing --in-file' >&2",
-                "  exit 1",
-                "fi",
                 "while IFS= read -r line; do",
                 "  if [[ \"$line\" =~ \\{\\{[[:space:]]*op://([^[:space:]]+)[[:space:]]*\\}\\} ]]; then",
                 "    printf 'RESOLVED:%s\\n' \"${BASH_REMATCH[1]}\"",

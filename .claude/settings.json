@@ -1,77 +1,100 @@
 {
-  "permissions": {
-    "allow": [
-      "mcp__plugin_serena_serena__activate_project",
-      "mcp__plugin_serena_serena__check_onboarding_performed",
-      "mcp__plugin_serena_serena__initial_instructions",
-      "mcp__plugin_serena_serena__list_dir",
-      "mcp__plugin_serena_serena__onboarding",
-      "mcp__plugin_serena_serena__write_memory",
-      "WebFetch(domain:raw.githubusercontent.com)",
-      "mcp__plugin_serena_serena__get_symbols_overview",
-      "mcp__plugin_serena_serena__read_file"
-    ]
-  },
-  "enabledPlugins": {
-    "claude-code-setup@claude-plugins-official": true,
-    "claude-md-management@claude-plugins-official": true,
-    "code-simplifier@claude-plugins-official": true,
-    "context7@claude-plugins-official": true,
-    "ralph-loop@claude-plugins-official": true,
-    "serena@claude-plugins-official": true,
-    "superpowers@claude-plugins-official": true,
-    "nx@nx-claude-plugins": true
-  },
-  "extraKnownMarketplaces": {
-    "nx-claude-plugins": {
-      "source": {
-        "source": "github",
-        "repo": "nrwl/nx-ai-agents-config"
-      }
-    }
-  },
-  "sandbox": {
-    "enabled": true,
-    "failIfUnavailable": true,
-    "allowUnsandboxedCommands": false,
-    "network": {
-      "allowedDomains": [
-        "api.github.com",
-        "codeload.github.com",
-        "github.com",
-        "objects.githubusercontent.com",
-        "plugins.dprint.dev",
-        "raw.githubusercontent.com",
-        "registry.npmjs.org",
-        "uploads.github.com"
-      ]
+    "permissions": {
+        "allow": [
+            "WebFetch(domain:raw.githubusercontent.com)",
+            "mcp__plugin_context7_context7__query-docs",
+            "mcp__plugin_serena_serena__activate_project",
+            "mcp__plugin_serena_serena__check_onboarding_performed",
+            "mcp__plugin_serena_serena__find_symbol",
+            "mcp__plugin_serena_serena__get_symbols_overview",
+            "mcp__plugin_serena_serena__initial_instructions",
+            "mcp__plugin_serena_serena__list_dir",
+            "mcp__plugin_serena_serena__onboarding",
+            "mcp__plugin_serena_serena__read_file",
+            "mcp__plugin_serena_serena__replace_content",
+            "mcp__plugin_serena_serena__replace_symbol_body",
+            "mcp__plugin_serena_serena__write_memory",
+            "mcp__plugin_serena_serena__search_for_pattern",
+            "mcp__plugin_serena_serena__create_text_file",
+            "mcp__plugin_serena_serena__insert_after_symbol",
+            "Skill(update-config)",
+            "Skill(update-config:*)"
+        ]
     },
-    "filesystem": {
-      "allowWrite": [
-        "~/Library/Caches/dprint",
-        "~/Library/Caches/pnpm",
-        "~/Library/pnpm"
-      ],
-      "denyRead": [
-        "~/"
-      ],
-      "allowRead": [
-        ".",
-        "~/.claude",
-        "~/.config/gh",
-        "~/.config/git",
-        "~/.config/vsrun",
-        "~/.gitconfig",
-        "~/.gitignore_global",
-        "~/.local/bin",
-        "~/.npmrc",
-        "~/.rbenv",
-        "~/.vscode/argv.json",
-        "~/CLAUDE.md",
-        "~/Library/Caches/dprint",
-        "~/Library/Caches/pnpm",
-        "~/Library/pnpm/store"
-      ]
+    "enabledPlugins": {
+        "claude-code-setup@claude-plugins-official": true,
+        "claude-md-management@claude-plugins-official": true,
+        "code-simplifier@claude-plugins-official": true,
+        "context7@claude-plugins-official": true,
+        "nx@nx-claude-plugins": true,
+        "ralph-loop@claude-plugins-official": true,
+        "serena@claude-plugins-official": true,
+        "superpowers@claude-plugins-official": true
+    },
+    "extraKnownMarketplaces": {
+        "nx-claude-plugins": {
+            "source": {
+                "source": "github",
+                "repo": "nrwl/nx-ai-agents-config"
+            }
+        }
+    },
+    "sandbox": {
+        "enabled": true,
+        "failIfUnavailable": true,
+        "allowUnsandboxedCommands": false,
+        "network": {
+            "allowedDomains": [
+                "api.github.com",
+                "codeload.github.com",
+                "github.com",
+                "objects.githubusercontent.com",
+                "plugins.dprint.dev",
+                "raw.githubusercontent.com",
+                "registry.npmjs.org",
+                "uploads.github.com"
+            ],
+            "allowUnixSockets": [
+                "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
+                "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/s.sock"
+            ],
+            "allowAllUnixSockets": true,
+            "allowMachLookup": [
+                "2BUA8C4S2C.com.1password.*",
+                "com.1password.*"
+            ]
+        },
+        "filesystem": {
+            "allowWrite": [
+                "~/.cache/pnpm",
+                "~/Library/Caches/dprint",
+                "~/Library/Caches/pnpm",
+                "~/Library/pnpm"
+            ],
+            "denyRead": [
+                "~/"
+            ],
+            "allowRead": [
+                ".",
+                "~/.cache/pnpm",
+                "~/.claude",
+                "~/.config/gh",
+                "~/.config/git",
+                "~/.config/op",
+                "~/.config/vsrun",
+                "~/.gitconfig",
+                "~/.gitignore_global",
+                "~/.local/bin",
+                "~/.npmrc",
+                "~/.rbenv",
+                "~/.vscode/argv.json",
+                "~/CLAUDE.md",
+                "~/Library/Caches/dprint",
+                "~/Library/Caches/pnpm",
+                "~/Library/Group Containers/2BUA8C4S2C.com.1password",
+                "~/Library/pnpm/store"
+            ]
+        },
+        "enableWeakerNetworkIsolation": true
     }
-  }
 }

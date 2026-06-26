@@ -20,8 +20,10 @@ ignorePaths:
   - pkg
   - pnpm-lock.yaml
   - tmp
+ignoreRandomStrings: true
 ignoreRegExpList:
   - "/\\\\[a-zA-Z]/g"
   - "/op:\\/\\/\\S+/g"
 language: en,en-US
+minRandomLength: 24
 version: "0.2"

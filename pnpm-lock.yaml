@@ -10,13 +10,6 @@ overrides:
 importers:
 
   .:
-    dependencies:
-      '@vscode/debugprotocol':
-        specifier: ^1.68.0
-        version: 1.68.0
-      pidtree:
-        specifier: ^0.6.0
-        version: 0.6.0
     devDependencies:
       '@eslint/compat':
         specifier: ^2.0.5
@@ -39,6 +32,9 @@ importers:
       '@types/vscode':
         specifier: ^1.116.0
         version: 1.118.0
+      '@vscode/debugprotocol':
+        specifier: ^1.68.0
+        version: 1.68.0
       '@vscode/test-cli':
         specifier: ^0.0.12
         version: 0.0.12
@@ -69,6 +65,9 @@ importers:
       ovsx:
         specifier: ^0.10.11
         version: 0.10.11
+      pidtree:
+        specifier: ^0.6.0
+        version: 0.6.0
       shx:
         specifier: ^0.4.0
         version: 0.4.0
