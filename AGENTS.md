@@ -356,9 +356,10 @@ name, version, and `engines.vscode`; build, release, and VS Code test configs
 derive from it where practical.
 
 For transitive security advisories where the upstream parent package has not
-yet released a fix, prefer a minimal root `package.json` `pnpm.overrides` entry
-and refresh `pnpm-lock.yaml` rather than adding a direct dependency that does
-not control the vulnerable subtree.
+yet released a fix, prefer a minimal `overrides` entry in `pnpm-workspace.yaml`
+(pnpm ≥ 10.33 no longer reads the `pnpm` field in `package.json`) and refresh
+`pnpm-lock.yaml` rather than adding a direct dependency that does not control
+the vulnerable subtree.
 
 The build tool is Vite, orchestrated by Nx via the `build:src` target (the
 `build` target is a noop wrapper over it). `build:src` has two configurations:

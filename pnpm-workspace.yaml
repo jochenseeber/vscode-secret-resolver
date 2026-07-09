@@ -1,3 +1,9 @@
 allowBuilds:
   dprint: false
   esbuild: false
+
+# Security override for a transitive advisory: mocha (via @vscode/test-cli)
+# still declares serialize-javascript ^6.0.2. Remove once mocha ships a fixed
+# range.
+overrides:
+  serialize-javascript: 7.0.5
