@@ -5,9 +5,10 @@ Development requires Node.js 20+ and pnpm 10.33.0. With Corepack enabled,
 You will also need the 1Password CLI (`op`) for manual testing, `xvfb-run` to
 run integration tests on Linux, and the GitHub CLI (`gh`) for publishing.
 
-We pin transitive security fixes in `package.json` `pnpm.overrides` when
-upstream packages have not adopted them yet. Keep that list as short as
-possible and remove entries once the parent dependency ships the fix.
+We pin transitive security fixes in the `overrides` section of
+`pnpm-workspace.yaml` when upstream packages have not adopted them yet. Keep
+that list as short as possible and remove entries once the parent dependency
+ships the fix.
 
 ```bash
 pnpm install                                                    # install deps

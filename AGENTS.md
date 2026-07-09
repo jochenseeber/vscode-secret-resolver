@@ -379,20 +379,19 @@ Unit tests live in `spec/` and are run with Vitest (`nx run test:unit` →
 TypeScript in-memory via esbuild so no separate build step is needed. The tests
 cover the pure modules: `stringEnvMap`, `dotenv`, `secretCache`,
 `resolverCache`, `opRunner`, `sessionConfig`, `resolveLaunchConfig`,
-`accountResolver`, `tokenResolver`, `configProvider`, and `processTree`
-(`PgrepProcessFinder` against a fake `pgrep` binary). Whole-tree stop-signal
-behavior — including the external-terminal marker fallback — is covered by the
-integration tests in `test/`. Each test injects fakes for all I/O (`OpRunner`,
-filesystem, git, op CLI) so no real 1Password CLI or filesystem access is
-required. Integration tests live in `test/` and are compiled by
-`tsconfig.test.json` (`outDir: dist/test`, emitting `src/` and `test/`) so the
-integration tests land at `dist/test/test/**/*.test.js` (the glob
-`.vscode-test.mjs` runs) and their `../src/…` imports resolve to
-`dist/test/src/…`. The `test:integration` target runs
-`tsc -p tsconfig.test.json` then `vscode-test` (it is **not** nx-cached — its
-result depends on the downloaded VS Code install / GUI, which are not nx
-inputs, so caching it produces false "flaky" reports). Type-checking for all
-source trees (`src/`, `spec/`, `test/`) is handled by the single
+`accountResolver`, `tokenResolver`, and `processTree` (`PgrepProcessFinder`
+against a fake `pgrep` binary). Whole-tree stop-signal behavior — including the
+external-terminal marker fallback — is covered by the integration tests in
+`test/`. Each test injects fakes for all I/O (`OpRunner`, filesystem, git, op
+CLI) so no real 1Password CLI or filesystem access is required. Integration
+tests live in `test/` and are compiled by `tsconfig.test.json`
+(`outDir: dist/test`, emitting `src/` and `test/`) so the integration tests
+land at `dist/test/test/**/*.test.js` (the glob `.vscode-test.mjs` runs) and
+their `../src/…` imports resolve to `dist/test/src/…`. The `test:integration`
+target runs `tsc -p tsconfig.test.json` then `vscode-test` (it is **not**
+nx-cached — its result depends on the downloaded VS Code install / GUI, which
+are not nx inputs, so caching it produces false "flaky" reports). Type-checking
+for all source trees (`src/`, `spec/`, `test/`) is handled by the single
 `tsconfig.json` via `nx run check:types` → `tsc --noEmit`.
 `nx run test:integration` and `nx run test` default to the `development`
 configuration so they use a non-minified build.
@@ -417,7 +416,7 @@ After the session ends, the temp dir under `os.tmpdir()` should be gone.
 - `writeVersion()` also keeps `package.json` `preview` synchronized with the
   target version: prerelease/`-dev` versions are preview builds, stable
   versions are not.
-- `scripts/ship-github.ts` accepts either `GH_TOKEN` or an existing `gh`
+- `scripts/ship-github.ts` accepts either `GITHUB_TOKEN` or an existing `gh`
   authentication session. It uses `gh release create --verify-tag`, so manual
   GitHub shipping requires the release tag to already exist on the remote.
 - `scripts/generate-icon.ts` exports `generateIcon()` and only runs through

@@ -17,11 +17,11 @@ import type { UserNotifier } from "../src/userNotifier"
 
 class FakeRunner {
     readonly opPath = "fake"
-    calls: Array<readonly string[]> = []
+    calls: Array<{ refs: readonly string[]; token: string | undefined; account: string | undefined }> = []
     nextResult: Map<string, string> | Error = new Map()
 
-    async inject(refs: readonly string[], _options: OpInjectOptions = {}): Promise<Map<string, string>> {
-        this.calls.push(refs)
+    async inject(refs: readonly string[], options: OpInjectOptions = {}): Promise<Map<string, string>> {
+        this.calls.push({ refs, token: options.token, account: options.account })
 
         if (this.nextResult instanceof Error) {
             throw this.nextResult
@@ -164,10 +164,11 @@ suite("LaunchConfigResolver", () => {
             API: "API-VALUE",
             PLAIN: "literal",
         })
-        assert.deepStrictEqual(runner.calls, [[
-            "op://v/i/db",
-            "op://v/i/api",
-        ]])
+        assert.deepStrictEqual(runner.calls, [{
+            refs: ["op://v/i/db", "op://v/i/api"],
+            token: undefined,
+            account: undefined,
+        }])
     })
 
     test("uses cached resolutions on a second call without re-spawning op", async () => {
@@ -683,6 +684,7 @@ suite("LaunchConfigResolver", () => {
         )
 
         assert.strictEqual(runner.calls.length, 2)
+        assert.strictEqual(runner.calls[1].account, "WORK_ACCOUNT")
         assert.deepStrictEqual(second?.env, { DB: "WORK-VALUE" })
     })
 
@@ -716,6 +718,7 @@ suite("LaunchConfigResolver", () => {
         )
 
         assert.strictEqual(runner.calls.length, 2)
+        assert.strictEqual(runner.calls[1].token, "tok")
         assert.deepStrictEqual(second?.env, { DB: "TAGGED-VALUE" })
     })
 
@@ -769,5 +772,253 @@ suite("LaunchConfigResolver", () => {
         const result = await resolver.resolve(config, undefined)
         assert.deepStrictEqual(result, config)
         assert.strictEqual(recorder.errors.length, 0)
+    })
+
+    test("default (unset) MODE + internalConsole resolves via op inject (cache default)", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "RESOLVED"]])
+        const { resolver, recorder } = makeResolver({ runner })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: { DB: "op://v/i/db" },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(result?.env, { DB: "RESOLVED" })
+        assert.strictEqual(runner.calls.length, 1)
+        assert.strictEqual(recorder.errors.length, 0)
+    })
+
+    test("MODE=cache with integratedTerminal resolves via inject", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "RESOLVED"]])
+        const { resolver } = makeResolver({ runner })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_MODE: "cache",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(result?.env, { DB: "RESOLVED" })
+    })
+
+    test("forwards the resolved service-account token to op inject", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const { resolver } = makeResolver({
+            runner,
+            resolveTokenForTag: async () => "my-token",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+            },
+        }
+        await resolver.resolve(config, undefined)
+        assert.strictEqual(runner.calls.length, 1)
+        assert.strictEqual(runner.calls[0].token, "my-token")
+    })
+
+    test("token resolution failure aborts launch with error", async () => {
+        const { resolver, recorder } = makeResolver({
+            resolveTokenForTag: async () => {
+                throw new Error("vault not found")
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.strictEqual(result, undefined)
+        assert.strictEqual(recorder.errors.length, 1)
+        assert.match(recorder.errors[0], /vault not found/)
+    })
+
+    test("token tag alone does not attach __secretResolver (terminal launch)", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const { resolver } = makeResolver({
+            runner,
+            resolveTokenForTag: async () => "tok",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.ok(result)
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        )
+    })
+
+    test("token tag alone does not attach __secretResolver (internalConsole)", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map()
+        const { resolver } = makeResolver({
+            runner,
+            resolveTokenForTag: async () => "tok",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.ok(result)
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        )
+    })
+
+    test("ACCOUNT_ID_VAR is used as the literal account id and stripped from final env", async () => {
+        const { resolver } = makeResolver({})
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_ID: "SOME_ACCOUNT_ID",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.ok(result)
+        assert.ok(!("SECRET_RESOLVER_ACCOUNT_ID" in (result!.env as Record<string, unknown>)))
+        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
+            | SecretResolverSessionConfig
+            | undefined
+        assert.strictEqual(sessionConfig?.accountId, "SOME_ACCOUNT_ID")
+    })
+
+    test("forwards the resolved accountId to the token resolver", async () => {
+        const tokenTagCalls: Array<{ tag: string; account: string | undefined }> = []
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const { resolver } = makeResolver({
+            runner,
+            resolveAccountForEmail: async () => "SOME_ACCOUNT_ID",
+            resolveTokenForTag: async (tag, _signal, account) => {
+                tokenTagCalls.push({ tag, account })
+                return "tok"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_TOKEN_TAG: "my-tag",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
+        }
+        await resolver.resolve(config, undefined)
+        assert.strictEqual(tokenTagCalls.length, 1)
+        assert.strictEqual(tokenTagCalls[0].account, "SOME_ACCOUNT_ID")
+    })
+
+    test("forwards the resolved accountId to op inject", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const { resolver } = makeResolver({
+            runner,
+            resolveAccountForEmail: async () => "SOME_ACCOUNT_ID",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: {
+                DB: "op://v/i/db",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
+        }
+        await resolver.resolve(config, undefined)
+        assert.strictEqual(runner.calls.length, 1)
+        assert.strictEqual(runner.calls[0].account, "SOME_ACCOUNT_ID")
+    })
+
+    test("accountId is attached to __secretResolver for internalConsole", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map()
+        const { resolver } = makeResolver({
+            runner,
+            resolveAccountForEmail: async () => "SOME_ACCOUNT_ID",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.ok(result)
+        const sessionConfig = (result as Record<string, unknown>)[
+            SECRET_RESOLVER_CONFIG_FIELD
+        ] as SecretResolverSessionConfig | undefined
+        assert.ok(sessionConfig)
+        assert.strictEqual(sessionConfig!.accountId, "SOME_ACCOUNT_ID")
+    })
+
+    test("error from resolveAccountForEmail aborts launch with error message", async () => {
+        const { resolver, recorder } = makeResolver({
+            resolveAccountForEmail: async () => {
+                throw new Error("no matching 1Password account")
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: {
+                FOO: "bar",
+                SECRET_RESOLVER_ACCOUNT_EMAIL: "user@example.com",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.strictEqual(result, undefined)
+        assert.strictEqual(recorder.errors.length, 1)
+        assert.match(recorder.errors[0], /no matching 1Password account/)
     })
 })
