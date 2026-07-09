@@ -3,7 +3,7 @@
     "compilerOptions": {
         "noEmit": false,
         "rootDir": ".",
-        "outDir": "dist/test"
+        "outDir": "dist-test"
     },
     "include": [
         "src/**/*.ts",

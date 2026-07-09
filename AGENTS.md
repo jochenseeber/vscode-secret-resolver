@@ -349,11 +349,14 @@ and strips every `SECRET_RESOLVER_*` key before the adapter sees them:
 Use the commands documented in `DEVELOPMENT.md`. For substantial changes,
 prefer `nx run stage:check` before concluding work.
 
-Assume Node.js 20+ and pnpm 10.33.0/Corepack are the baseline local tools.
-Treat `op`, `git`, `gh`, and `xvfb-run` as workflow-specific rather than
-general setup requirements. Treat `package.json` as authoritative for extension
-name, version, and `engines.vscode`; build, release, and VS Code test configs
-derive from it where practical.
+Assume Node.js 22+ and pnpm 10.33.0/Corepack are the baseline local tools. Node
+22 is the target everywhere: CI, `engines.node`, the Vite bundle target, and
+`@types/node` (pinned to 22.x to match the extension-host runtime of VS Code
+1.116, Node 22 — do not bump it past the runtime floor). Treat `op`, `git`,
+`gh`, and `xvfb-run` as workflow-specific rather than general setup
+requirements. Treat `package.json` as authoritative for extension name,
+version, and `engines.vscode`; build, release, and VS Code test configs derive
+from it where practical.
 
 For transitive security advisories where the upstream parent package has not
 yet released a fix, prefer a minimal `overrides` entry in `pnpm-workspace.yaml`
@@ -368,7 +371,7 @@ The build tool is Vite, orchestrated by Nx via the `build:src` target (the
 loop and testing). Both configurations emit sourcemaps.
 `nx run build:src --configuration=development` produces the dev build;
 `nx run build:src` (or `nx run build`) produces the release build. Vite bundles
-`src/extension.ts` into `dist/extension.js` (CJS, Node 20 target). Runtime
+`src/extension.ts` into `dist/extension.js` (CJS, Node 22 target). Runtime
 dependencies (`pidtree`, `@vscode/debugprotocol`) are bundled; `vscode` and
 Node built-ins are external (Node built-ins are enumerated via `builtinModules`
 from `node:module`). Config lives in `vite.config.ts`.
@@ -385,14 +388,16 @@ external-terminal marker fallback — is covered by the integration tests in
 `test/`. Each test injects fakes for all I/O (`OpRunner`, filesystem, git, op
 CLI) so no real 1Password CLI or filesystem access is required. Integration
 tests live in `test/` and are compiled by `tsconfig.test.json`
-(`outDir: dist/test`, emitting `src/` and `test/`) so the integration tests
-land at `dist/test/test/**/*.test.js` (the glob `.vscode-test.mjs` runs) and
-their `../src/…` imports resolve to `dist/test/src/…`. The `test:integration`
-target runs `tsc -p tsconfig.test.json` then `vscode-test` (it is **not**
-nx-cached — its result depends on the downloaded VS Code install / GUI, which
-are not nx inputs, so caching it produces false "flaky" reports). Type-checking
-for all source trees (`src/`, `spec/`, `test/`) is handled by the single
-`tsconfig.json` via `nx run check:types` → `tsc --noEmit`.
+(`outDir: dist-test`, emitting `src/` and `test/`) so the integration tests
+land at `dist-test/test/**/*.test.js` (the glob `.vscode-test.mjs` runs) and
+their `../src/…` imports resolve to `dist-test/src/…`. The separate `dist-test`
+directory keeps the test build out of `build:src`'s cached `dist` output —
+overlapping the two makes nx's cache replay fail with an I/O error. The
+`test:integration` target runs `tsc -p tsconfig.test.json` then `vscode-test`
+(it is **not** nx-cached — its result depends on the downloaded VS Code install
+/ GUI, which are not nx inputs, so caching it produces false "flaky" reports).
+Type-checking for all source trees (`src/`, `spec/`, `test/`) is handled by the
+single `tsconfig.json` via `nx run check:types` → `tsc --noEmit`.
 `nx run test:integration` and `nx run test` default to the `development`
 configuration so they use a non-minified build.
 

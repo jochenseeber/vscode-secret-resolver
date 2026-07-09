@@ -18,7 +18,9 @@
             "mcp__plugin_serena_serena__create_text_file",
             "mcp__plugin_serena_serena__insert_after_symbol",
             "Skill(update-config)",
-            "Skill(update-config:*)"
+            "Skill(update-config:*)",
+            "mcp__playwright__browser_navigate",
+            "mcp__playwright__browser_evaluate"
         ]
     },
     "enabledPlugins": {

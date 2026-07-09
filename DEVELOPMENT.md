@@ -1,9 +1,11 @@
 # Development
 
-Development requires Node.js 20+ and pnpm 10.33.0. With Corepack enabled,
-`pnpm install` picks up the pinned version from `package.json` automatically.
-You will also need the 1Password CLI (`op`) for manual testing, `xvfb-run` to
-run integration tests on Linux, and the GitHub CLI (`gh`) for publishing.
+Development requires Node.js 22+ (the `@vscode/test-cli` /
+`@vscode/test-electron` toolchain declares `engines.node >= 22`) and pnpm
+10.33.0. With Corepack enabled, `pnpm install` picks up the pinned version from
+`package.json` automatically. You will also need the 1Password CLI (`op`) for
+manual testing, `xvfb-run` to run integration tests on Linux, and the GitHub
+CLI (`gh`) for publishing.
 
 We pin transitive security fixes in the `overrides` section of
 `pnpm-workspace.yaml` when upstream packages have not adopted them yet. Keep

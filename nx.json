@@ -23,12 +23,5 @@
             "{workspaceRoot}/tsconfig.json"
         ]
     },
-    "targetDefaults": {
-        "build": {
-            "cache": true
-        },
-        "test": {
-            "cache": true
-        }
-    }
+    "targetDefaults": {}
 }

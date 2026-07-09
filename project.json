@@ -111,7 +111,7 @@
             "cache": false,
             "executor": "nx:run-commands",
             "options": {
-                "command": "rm -rf dist pkg"
+                "command": "rm -rf dist dist-test pkg"
             }
         },
         "format": {

@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => ({
         rollupOptions: {
             external: ["vscode", /^node:/, ...builtinModules],
         },
-        target: "node20",
+        target: "node22",
         sourcemap: true,
         minify: mode === "production",
     },
