@@ -30,24 +30,25 @@ pnpm exec nx run test             # test:unit + test:integration
 pnpm exec nx run stage:check      # format + check + test (pre-push verification)
 pnpm exec nx run package          # build .vsix into pkg/
 pnpm exec nx run changelog        # regenerate CHANGELOG.md from conventional commits
-pnpm exec nx run release:commit   # cut a release (creates commits and tag locally; you still push branch + tag)
+pnpm exec nx run release           # cut a release (creates commits and tag locally; you still push branch + tag)
+pnpm exec nx run release -- --yes  # same, but skip the confirmation prompt (-y for short, --no-yes restores it)
 pnpm exec nx run ship:github      # upload packaged .vsix as a GitHub release (tag must already exist on GitHub)
 pnpm exec nx run ship:marketplace # publish packaged .vsix to VS Code Marketplace
 pnpm exec nx run ship:openvsx     # publish packaged .vsix to Open VSX
 ```
 
-`nx run release:commit` creates the release commit and local tag, then bumps
-the release branch to the next patch `-dev` version. When run on `main`, it
-also bumps `main` to the next minor `-dev` version. Release refs use `vX.Y.Z`
-tags and `vX.Y-dev` branches. The release automation keeps `package.json`
-`preview` in sync with the version channel: prerelease and `-dev` versions set
-it to `true`, stable releases set it to `false`.
+`nx run release` creates the release commit and local tag, then bumps the
+release branch to the next patch `-dev` version. When run on `main`, it also
+bumps `main` to the next minor `-dev` version. Release refs use `vX.Y.Z` tags
+and `vX.Y-dev` branches. The release automation keeps `package.json` `preview`
+in sync with the version channel: prerelease and `-dev` versions set it to
+`true`, stable releases set it to `false`.
 
 ## Publishing
 
 The `ship:*` targets publish the `.vsix` matching the current `package.json`
-version from `pkg/`. The order is `release:commit` -> `package` -> `ship:*`.
-Each target needs an auth token:
+version from `pkg/`. The order is `release` -> `package` -> `ship:*`. Each
+target needs an auth token:
 
 - `ship:github` needs the release tag already on GitHub, plus either
   `GITHUB_TOKEN` or an active `gh` session

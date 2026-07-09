@@ -174,37 +174,7 @@
                 "{projectRoot}/pkg"
             ]
         },
-        "release:bump": {
-            "cache": false,
-            "dependsOn": [
-                "release:plan"
-            ],
-            "executor": "nx:run-commands",
-            "options": {
-                "command": "tsx scripts/release.ts bump"
-            }
-        },
-        "release:changelog": {
-            "cache": false,
-            "dependsOn": [
-                "release:bump"
-            ],
-            "executor": "nx:run-commands",
-            "options": {
-                "command": "tsx scripts/changelog.ts"
-            }
-        },
-        "release:commit": {
-            "cache": false,
-            "dependsOn": [
-                "release:changelog"
-            ],
-            "executor": "nx:run-commands",
-            "options": {
-                "command": "tsx scripts/release.ts commit"
-            }
-        },
-        "release:plan": {
+        "release": {
             "cache": false,
             "dependsOn": [
                 "check",
@@ -212,7 +182,7 @@
             ],
             "executor": "nx:run-commands",
             "options": {
-                "command": "tsx scripts/release.ts plan"
+                "command": "tsx scripts/release.ts --yes"
             }
         },
         "ship": {

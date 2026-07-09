@@ -10,6 +10,7 @@ import {
 } from "./util.ts"
 
 import { createInterface } from "node:readline/promises"
+import { parseArgs } from "node:util"
 import { regenerateCurrentVersionChangelog } from "./changelog.ts"
 
 function escapeRegExp(text: string): string {
@@ -125,6 +126,29 @@ function detectBumpFromVersionState(current: Version): BumpDecision {
     }
 }
 
+interface ReleaseOptions {
+    /** `--yes` / `-y`: proceed without the interactive confirmation prompt. */
+    assumeYes: boolean
+}
+
+/**
+ * Parses the script's command line. Positionals and unknown options are
+ * rejected. `--no-yes` restores the prompt when a wrapper passes `--yes` by
+ * default.
+ */
+function parseReleaseOptions(args: string[]): ReleaseOptions {
+    const { values } = parseArgs({
+        args,
+        options: {
+            yes: { type: "boolean", short: "y", default: false },
+        },
+        allowNegative: true,
+    })
+
+    const options: ReleaseOptions = { assumeYes: values.yes === true }
+    return options
+}
+
 async function confirm(question: string): Promise<boolean> {
     const rl = createInterface({ input: process.stdin, output: process.stdout })
     const answer = (await rl.question(`${question} [y/N] `)).trim().toLowerCase()
@@ -153,6 +177,8 @@ async function regenerateChangelog(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+    const options = parseReleaseOptions(process.argv.slice(2))
+
     assertCleanWorkspace()
 
     const current = parseVersion(readPackageJson().version)
@@ -234,7 +260,10 @@ async function main(): Promise<void> {
 
     console.log(`Tag to create          : ${tag}\n`)
 
-    if (!(await confirm("Proceed?"))) {
+    if (options.assumeYes) {
+        console.log("Proceeding without confirmation (--yes).")
+    }
+    else if (!(await confirm("Proceed?"))) {
         console.log("Aborted.")
         process.exit(1)
     }

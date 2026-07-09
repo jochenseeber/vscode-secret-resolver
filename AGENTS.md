@@ -433,7 +433,7 @@ After the session ends, the temp dir under `os.tmpdir()` should be gone.
 ## Release Flow
 
 `scripts/release.ts` handles version bumping with a release-branch model
-(`nx run release:commit`):
+(`nx run release`; `--yes`/`-y` skips the confirmation prompt):
 
 - On `main` with a `*-dev` version: derives the release version directly from
   `package.json` (stripping the `-dev` suffix) and infers the bump label by
@@ -447,12 +447,12 @@ After the session ends, the temp dir under `os.tmpdir()` should be gone.
   patch `*-dev`, then bumps `main` to the next minor `*-dev`.
 - On a release branch with a `*-dev` version: commits the release version,
   creates the release tag, then bumps the branch to the next patch `*-dev`.
-- At the release-commit step, `conventional-changelog` regenerates
-  `CHANGELOG.md` (conventionalcommits preset) and the updated file is folded
-  into the same commit as the version bump. When releasing from `main`, the
-  regenerated `CHANGELOG.md` is also copied from the release branch onto `main`
-  (via `git checkout <release-branch> -- CHANGELOG.md`) and committed alongside
-  the next-dev version bump. Commit messages must follow the
+- At the release step, `conventional-changelog` regenerates `CHANGELOG.md`
+  (conventionalcommits preset) and the updated file is folded into the same
+  commit as the version bump. When releasing from `main`, the regenerated
+  `CHANGELOG.md` is also copied from the release branch onto `main` (via
+  `git checkout <release-branch> -- CHANGELOG.md`) and committed alongside the
+  next-dev version bump. Commit messages must follow the
   [Conventional Commits spec](https://www.conventionalcommits.org/en/v1.0.0/)
   for entries to appear.
 - All commits authored by `scripts/release.ts` use Conventional Commits format:
