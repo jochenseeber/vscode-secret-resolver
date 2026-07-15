@@ -47,7 +47,7 @@
         "@vscode/test-cli": "^0.0.15",
         "@vscode/test-electron": "^3.0.0",
         "@vscode/vsce": "^3.9.2",
-        "conventional-changelog": "^8.0.1",
+        "conventional-changelog": "^8.1.0",
         "conventional-changelog-conventionalcommits": "^10.2.1",
         "dprint": "^0.55.1",
         "eslint": "^10.6.0",
