@@ -49,7 +49,7 @@
         "@vscode/vsce": "^3.9.2",
         "conventional-changelog": "^8.0.1",
         "conventional-changelog-conventionalcommits": "^10.2.1",
-        "dprint": "^0.55.1",
+        "dprint": "^0.55.2",
         "eslint": "^10.6.0",
         "mocha": "^11.7.6",
         "nx": "^23.0.1",
