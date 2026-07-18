@@ -17,7 +17,7 @@ jobs:
     env:
       IS_PRERELEASE: ""
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Require the configured prefix, then treat any remaining hyphen in the
       # version as a SemVer pre-release suffix such as 1.0.0-rc.1.
