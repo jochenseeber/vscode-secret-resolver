@@ -63,7 +63,8 @@
             "allowAllUnixSockets": true,
             "allowMachLookup": [
                 "2BUA8C4S2C.com.1password.*",
-                "com.1password.*"
+                "com.1password.*",
+                "com.apple.SecurityServer"
             ]
         },
         "filesystem": {
