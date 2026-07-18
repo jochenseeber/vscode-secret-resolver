@@ -443,8 +443,9 @@ After the session ends, the temp dir under `os.tmpdir()` should be gone.
 
 - `scripts/util.ts` centralizes reusable script helpers: clean-worktree checks,
   `package.json` version writes, targeted file formatting for script-managed
-  files, publish preflight loading, GitHub auth detection, VSIX resolution, and
-  `runEntrypoint`.
+  files, publish preflight loading, GitHub auth detection, VSIX resolution,
+  `escapeRegExp` (complete regex-metacharacter escaping, backslash included;
+  used by `release.ts` and `changelog.ts`), and `runEntrypoint`.
 - `writeVersion()` also keeps `package.json` `preview` synchronized with the
   target version: prerelease/`-dev` versions are preview builds, stable
   versions are not.

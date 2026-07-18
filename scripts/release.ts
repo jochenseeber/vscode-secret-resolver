@@ -1,6 +1,7 @@
 import {
     assertCleanWorkspace,
     capture,
+    escapeRegExp,
     formatVersion,
     parseVersion,
     readPackageJson,
@@ -13,14 +14,10 @@ import { createInterface } from "node:readline/promises"
 import { parseArgs } from "node:util"
 import { regenerateCurrentVersionChangelog } from "./changelog.ts"
 
-function escapeRegExp(text: string): string {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
-
 const { releaseRefPrefix: RELEASE_REF_PREFIX, releaseBranchSuffix: RELEASE_BRANCH_SUFFIX } = readPackageJson()
 const TAG_PREFIX = RELEASE_REF_PREFIX
 const RELEASE_BRANCH_RE = new RegExp(
-    `^${escapeRegExp(RELEASE_REF_PREFIX)}(\\d+)\.(\\d+)${escapeRegExp(RELEASE_BRANCH_SUFFIX)}$`,
+    `^${escapeRegExp(RELEASE_REF_PREFIX)}(\\d+)\\.(\\d+)${escapeRegExp(RELEASE_BRANCH_SUFFIX)}$`,
 )
 
 type BumpChoice = "major" | "minor"

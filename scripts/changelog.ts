@@ -1,4 +1,4 @@
-import { readPackageJson, ROOT, runEntrypoint, writeFormattedTextFile } from "./util.ts"
+import { escapeRegExp, readPackageJson, ROOT, runEntrypoint, writeFormattedTextFile } from "./util.ts"
 
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
@@ -30,7 +30,7 @@ function stripLeadingTitle(body: string): string {
 }
 
 function hasVersionSection(body: string, version: string): boolean {
-    const escaped = version.replace(/[.\-+]/g, "\\$&")
+    const escaped = escapeRegExp(version)
     return new RegExp(`^##\\s+\\[?${escaped}[\\]\\s(]`, "m").test(body)
 }
 

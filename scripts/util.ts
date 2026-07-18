@@ -183,6 +183,14 @@ export function capture(cmd: string, args: string[]): string {
     }
 }
 
+/**
+ * Escapes every regular-expression metacharacter in `text` (backslash
+ * included) so the result matches `text` literally when embedded in a pattern.
+ */
+export function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
 export function requireEnv(name: string): string {
     const value = process.env[name]
     if (!value) throw new Error(`Required environment variable ${name} is not set.`)
