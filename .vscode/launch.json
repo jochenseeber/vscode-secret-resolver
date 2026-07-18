@@ -3,9 +3,9 @@
         {
             "args": [
                 "--extensionDevelopmentPath=${workspaceFolder}",
-                "${workspaceFolder}/examples"
+                "${workspaceFolder}/examples/env-vars"
             ],
-            "name": "Run Extension",
+            "name": "Run with env vars",
             "outFiles": [
                 "${workspaceFolder}/dist/**/*.js"
             ],
@@ -16,13 +16,13 @@
         {
             "args": [
                 "--extensionDevelopmentPath=${workspaceFolder}",
-                "${workspaceFolder}/examples"
+                "${workspaceFolder}/examples/settings"
             ],
-            "name": "Run Extension",
+            "name": "Run with settings",
             "outFiles": [
                 "${workspaceFolder}/dist/**/*.js"
             ],
-            "preLaunchTask": "nx: compile",
+            "preLaunchTask": "nx: watch",
             "request": "launch",
             "type": "extensionHost"
         }

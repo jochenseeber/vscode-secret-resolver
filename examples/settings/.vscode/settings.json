@@ -1,0 +1,5 @@
+{
+    "secretResolver.accountGitConfig": ".",
+    "secretResolver.signalOnStop": "int+5:kill",
+    "secretResolver.tokenTag": "token/development"
+}

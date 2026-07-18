@@ -25,9 +25,39 @@
         ],
         "configuration": {
             "properties": {
+                "secretResolver.accountEmail": {
+                    "default": "",
+                    "markdownDescription": "Default 1Password account, looked up from this email address (case-insensitive). Overridden by the `SECRET_RESOLVER_ACCOUNT_EMAIL` launch env var. Lower priority than `#secretResolver.accountGitConfig#`, higher than `#secretResolver.accountId#`.",
+                    "scope": "resource",
+                    "type": "string"
+                },
+                "secretResolver.accountGitConfig": {
+                    "default": "",
+                    "markdownDescription": "Default 1Password account, resolved from the `user.email` in the git config of this workspace-relative subdirectory (`.` = workspace root; empty = off). Overridden by the `SECRET_RESOLVER_ACCOUNT_GIT_CONFIG` launch env var. Highest account-selection priority.",
+                    "scope": "resource",
+                    "type": "string"
+                },
+                "secretResolver.accountId": {
+                    "default": "",
+                    "markdownDescription": "Default 1Password account shorthand or UUID, used verbatim as `--account`. Overridden by the `SECRET_RESOLVER_ACCOUNT_ID` launch env var. Lowest account-selection priority.",
+                    "scope": "resource",
+                    "type": "string"
+                },
                 "secretResolver.opPath": {
                     "default": "op",
                     "description": "Path to the 1Password CLI binary. Looked up on PATH when unqualified.",
+                    "type": "string"
+                },
+                "secretResolver.signalOnStop": {
+                    "default": "",
+                    "markdownDescription": "Default stop-signal sequence for terminal launches: `+`-separated steps, each an optional `N:` second delay then a signal name (`TERM`, `KILL`, `INT`, `HUP`; case-insensitive), e.g. `TERM+5:KILL`. `off` or empty disables. Overridden by the `SECRET_RESOLVER_SIGNAL_ON_STOP` launch env var.",
+                    "scope": "resource",
+                    "type": "string"
+                },
+                "secretResolver.tokenTag": {
+                    "default": "",
+                    "markdownDescription": "Default tag of the \"API Credential\" vault item whose `credential` field is used as the service-account token for launches containing `op://` references. Overridden by the `SECRET_RESOLVER_TOKEN_TAG` launch env var.",
+                    "scope": "resource",
                     "type": "string"
                 }
             },

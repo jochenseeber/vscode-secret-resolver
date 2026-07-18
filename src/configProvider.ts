@@ -10,7 +10,7 @@ import { type EnvFileReader, LaunchConfigResolver, type WorkspaceTrustReader } f
 import { ResolverCache } from "./resolverCache"
 import type { SecretCache } from "./secretCache"
 import { TagTokenResolver, type TokenResolverFactory } from "./tokenResolver"
-import { WindowUserNotifier } from "./vscodeAdapters"
+import { WindowUserNotifier, WorkspaceResolverSettingsReader } from "./vscodeAdapters"
 
 export class SecretDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
     private readonly cache: SecretCache
@@ -48,6 +48,8 @@ export class SecretDebugConfigurationProvider implements vscode.DebugConfigurati
             isTrusted: () => vscode.workspace.isTrusted,
         }
 
+        const settingsReader = new WorkspaceResolverSettingsReader()
+
         const accountResolverFactory: AccountResolverFactory = {
             createForEmail: (email) => new EmailAccountResolver(email, opRunner, resolverCache),
             createForGitConfig: (subdirectory, workspacePath) =>
@@ -72,6 +74,7 @@ export class SecretDebugConfigurationProvider implements vscode.DebugConfigurati
             accountResolverFactory,
             tokenResolverFactory,
             workspaceTrust,
+            settingsReader,
         )
         return launchResolver
     }

@@ -62,8 +62,12 @@ activation by checking the dir's `.pid` file against live PIDs.
   `showWarning`) for user-facing popups, distinct from logging.
 - `src/vscodeAdapters.ts` — `vscode`-backed implementations:
   `OutputChannelLogger` (wraps the `Secret Resolver` `LogOutputChannel` created
-  on activation) and `WindowUserNotifier` (wraps `vscode.window` message
-  popups).
+  on activation), `WindowUserNotifier` (wraps `vscode.window` message popups),
+  and `WorkspaceResolverSettingsReader` (`ResolverSettingsReader` reading the
+  `secretResolver.{accountId,accountGitConfig,accountEmail,tokenTag,signalOnStop}`
+  settings, scoped to the launch folder via
+  `getConfiguration(section, Uri.file(path))` so per-folder settings apply;
+  blank values normalized to `undefined`).
 - `src/resolverCache.ts` — `ResolverCache`, domain cache namespaces layered
   over `SecretCache`: resolved refs (`getResolvedRef` / `setResolvedRef`, both
   taking a `RefResolutionScope` of `{ accountId, tokenTag }` so a ref resolved
@@ -145,10 +149,18 @@ activation by checking the dir's `.pid` file against live PIDs.
   (interface exported here; `vscode.workspace.isTrusted`-backed in
   `configProvider.ts` — an untrusted workspace aborts any launch with an
   `env`/`envFile` instead of resolving it, matching the
-  `untrustedWorkspaces: "limited"` declaration in `package.json`). The
-  `op://`-ref check (`isOpRef` + `OP_REF_PATTERN`) and signal-on-stop parsing
-  (`parseSignalOnStop` + `DEFAULT_STEP_DELAY_SECONDS`, `STEP_PATTERN`) live on
-  the class as `private static` members; `parseSignalOnStop` returns a
+  `untrustedWorkspaces: "limited"` declaration in `package.json`), and
+  `ResolverSettingsReader` (interface + `ResolverSettings` data type exported
+  here; `WorkspaceResolverSettingsReader`-backed in `configProvider.ts`, read
+  fresh per launch). The signal-on-stop value, the token tag, and the three
+  account markers are read via the
+  `private static effectiveMarkerValue(env, key, settingValue)` helper: when
+  the env key is present its trimmed value wins (an explicit empty var switches
+  the marker off), otherwise the settings default applies; the existing
+  git-config > email > id priority then runs over the effective account values.
+  The `op://`-ref check (`isOpRef` + `OP_REF_PATTERN`) and signal-on-stop
+  parsing (`parseSignalOnStop` + `DEFAULT_STEP_DELAY_SECONDS`, `STEP_PATTERN`)
+  live on the class as `private static` members; `parseSignalOnStop` returns a
   discriminated result (`off` / `invalid` / `steps`) so warning logic does not
   re-parse the raw value. Type-only `vscode` import so unit tests run without
   the extension host. `resolve()` orchestrates `readEnvFile`,
@@ -177,10 +189,11 @@ activation by checking the dir's `.pid` file against live PIDs.
   `CancellationToken` → `AbortSignal`, reads `secretResolver.opPath`, and
   builds a `LaunchConfigResolver` via `buildResolver` (wiring `OpRunner`,
   `GitRunner`, `ResolverCache`, `WindowUserNotifier`, the `EnvFileReader`, the
-  `vscode.workspace.isTrusted`-backed `WorkspaceTrustReader`, and the
-  `AccountResolverFactory` / `TokenResolverFactory` implementations —
-  `EmailAccountResolver`, `GitConfigAccountResolver`, `TagTokenResolver`);
-  `refreshResolver` rebuilds it when `opPath` changes. Constructed directly
+  `vscode.workspace.isTrusted`-backed `WorkspaceTrustReader`, the
+  `WorkspaceResolverSettingsReader`, and the `AccountResolverFactory` /
+  `TokenResolverFactory` implementations — `EmailAccountResolver`,
+  `GitConfigAccountResolver`, `TagTokenResolver`); `refreshResolver` rebuilds
+  it when `opPath` changes. Constructed directly
   (`new SecretDebugConfigurationProvider(cache, logger)`) by `extension.ts`.
 - `src/debugAdapterProxy.ts` — Per-session tracker and VS Code-facing
   orchestration. Owns the module-private `isRunInTerminalRequest` DAP type
@@ -277,6 +290,20 @@ activation by checking the dir's `.pid` file against live PIDs.
 - `secretResolver.opPath` (string, default `"op"`): path to the 1Password CLI
   binary. Unqualified values are looked up on `PATH`. Changing this setting
   clears the resolved-secret cache.
+- `secretResolver.accountGitConfig`, `secretResolver.accountEmail`,
+  `secretResolver.accountId` (string, default `""`, `scope: "resource"`):
+  defaults for the matching `SECRET_RESOLVER_ACCOUNT_*` markers, honouring the
+  same git-config > email > id priority.
+- `secretResolver.tokenTag` (string, default `""`, `scope: "resource"`):
+  default for `SECRET_RESOLVER_TOKEN_TAG`.
+- `secretResolver.signalOnStop` (string, default `""`, `scope: "resource"`):
+  default for `SECRET_RESOLVER_SIGNAL_ON_STOP`.
+
+  These five are `resource`-scoped (user / workspace / per-folder) and read
+  scoped to the launch folder by `WorkspaceResolverSettingsReader`. The
+  matching `SECRET_RESOLVER_*` env var on a launch overrides the setting (an
+  explicitly empty env var switches it off); blank settings are inert. Merge
+  happens in `LaunchConfigResolver`, not the reader.
 
 ## Commands
 

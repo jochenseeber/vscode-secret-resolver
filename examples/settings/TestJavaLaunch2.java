@@ -2,13 +2,13 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import sun.misc.Signal;
 
-public final class TestJavaLaunch {
-    private TestJavaLaunch() {}
+public final class TestJavaLaunch2 {
+    private TestJavaLaunch2() {}
 
     public static void main(String[] args) throws InterruptedException {
         installSignalLoggers();
         System.getenv().entrySet().stream()
-            .filter(TestJavaLaunch::shouldPrint)
+            .filter(TestJavaLaunch2::shouldPrint)
             .sorted(Map.Entry.comparingByKey())
             .forEach(entry -> System.out.println(entry.getKey() + "=" + entry.getValue()));
         Thread.sleep(300_000);

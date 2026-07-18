@@ -1,0 +1,79 @@
+{
+    "configurations": [
+        {
+            "name": "Test Node Launch: Integrated Terminal",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch2.js",
+            "console": "integratedTerminal",
+            "env": {
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Node Launch: External Terminal",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch2.js",
+            "console": "externalTerminal",
+            "env": {
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Node Launch: Internal Console",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/TestNodeLaunch2.js",
+            "console": "internalConsole",
+            "env": {
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Java Launch: Integrated Terminal",
+            "type": "java",
+            "request": "launch",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch2.java",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "env": {
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Java Launch: External Terminal",
+            "type": "java",
+            "request": "launch",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch2.java",
+            "cwd": "${workspaceFolder}",
+            "console": "externalTerminal",
+            "env": {
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Test Java Launch: Internal Console",
+            "type": "java",
+            "request": "launch",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch2.java",
+            "cwd": "${workspaceFolder}",
+            "console": "internalConsole",
+            "env": {
+                "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
+                "TEST_HELLO": "Hello, World!"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        }
+    ]
+}

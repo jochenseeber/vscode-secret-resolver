@@ -39,6 +39,12 @@ All per-launch configuration is done through `SECRET_RESOLVER_*` environment
 variables in `env` or `envFile`. We strip every one of them before the program
 sees its environment, so they are truly launch-only metadata.
 
+Account selection, the service-account token tag, and the stop-signal sequence
+can also be set once, for all launches, through VS Code settings (see
+[Extension settings](#extension-settings)). The env var always wins when both
+are present — an explicit env var overrides the matching setting, and an
+explicitly empty env var switches the setting off.
+
 ### How secrets are resolved
 
 Every `op://` reference is resolved in-process by running `op inject`. The
@@ -204,10 +210,28 @@ warning is shown and nothing is signaled.
 
 ### Extension settings
 
-The only extension setting is `secretResolver.opPath` (default `"op"`): the
-path to the 1Password CLI binary. Unqualified names are looked up on `PATH`;
-use an absolute path (e.g. `/opt/homebrew/bin/op`) to pin to a specific
-install. Changing this setting clears the resolved-secret cache.
+- `secretResolver.opPath` (default `"op"`): the path to the 1Password CLI
+  binary. Unqualified names are looked up on `PATH`; use an absolute path (e.g.
+  `/opt/homebrew/bin/op`) to pin to a specific install. Changing this setting
+  clears the resolved-secret cache.
+- `secretResolver.accountGitConfig`, `secretResolver.accountEmail`,
+  `secretResolver.accountId`: defaults for
+  [account selection](#account-selection), mirroring the matching
+  `SECRET_RESOLVER_ACCOUNT_*` env vars and honouring the same git-config >
+  email > id priority.
+- `secretResolver.tokenTag`: a default for the
+  [service account token](#service-account-token-secret_resolver_token_tag)
+  tag, mirroring `SECRET_RESOLVER_TOKEN_TAG`.
+- `secretResolver.signalOnStop`: a default
+  [stop-signal sequence](#signal-on-stop-secret_resolver_signal_on_stop),
+  mirroring `SECRET_RESOLVER_SIGNAL_ON_STOP`.
+
+These five settings have `resource` scope, so you can set them in user,
+workspace, or per-folder (project) settings; the most specific one wins, as
+usual for VS Code settings. For a given launch the corresponding
+`SECRET_RESOLVER_*` env var still overrides the resolved setting; an explicitly
+empty env var switches the setting off for that launch. Leave a setting empty
+to disable it.
 
 ## Commands
 

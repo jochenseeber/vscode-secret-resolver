@@ -16,7 +16,7 @@
             "name": "Test Node Launch: Integrated Terminal",
             "type": "node",
             "request": "launch",
-            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "program": "${workspaceFolder}/TestNodeLaunch1.js",
             "console": "integratedTerminal",
             "env": {
                 "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
@@ -28,7 +28,7 @@
             "name": "Test Node Launch: External Terminal",
             "type": "node",
             "request": "launch",
-            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "program": "${workspaceFolder}/TestNodeLaunch1.js",
             "console": "externalTerminal",
             "env": {
                 "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
@@ -40,7 +40,7 @@
             "name": "Test Node Launch: Internal Console",
             "type": "node",
             "request": "launch",
-            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "program": "${workspaceFolder}/TestNodeLaunch1.js",
             "console": "internalConsole",
             "env": {
                 "TEST_SECRET": "op://Development/Secret Resolver Extension Test/password",
@@ -52,7 +52,7 @@
             "name": "Test Java Launch: Integrated Terminal",
             "type": "java",
             "request": "launch",
-            "mainClass": "${workspaceFolder}/TestJavaLaunch.java",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch1.java",
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "env": {
@@ -65,7 +65,7 @@
             "name": "Test Java Launch: External Terminal",
             "type": "java",
             "request": "launch",
-            "mainClass": "${workspaceFolder}/TestJavaLaunch.java",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch1.java",
             "cwd": "${workspaceFolder}",
             "console": "externalTerminal",
             "env": {
@@ -78,7 +78,7 @@
             "name": "Test Java Launch: Internal Console",
             "type": "java",
             "request": "launch",
-            "mainClass": "${workspaceFolder}/TestJavaLaunch.java",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch1.java",
             "cwd": "${workspaceFolder}",
             "console": "internalConsole",
             "env": {
@@ -91,7 +91,7 @@
             "name": "Test Node Launch: Integrated Terminal (signal-on-stop term+kill)",
             "type": "node",
             "request": "launch",
-            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "program": "${workspaceFolder}/TestNodeLaunch1.js",
             "console": "integratedTerminal",
             "env": {
                 "SECRET_RESOLVER_SIGNAL_ON_STOP": "int+5:kill",
@@ -104,7 +104,7 @@
             "name": "Test Java Launch: External Terminal (signal-on-stop term+kill)",
             "type": "java",
             "request": "launch",
-            "mainClass": "${workspaceFolder}/TestJavaLaunch.java",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch1.java",
             "cwd": "${workspaceFolder}",
             "console": "externalTerminal",
             "env": {
@@ -118,7 +118,7 @@
             "name": "Test Java Launch: Integrated Terminal (no op references)",
             "type": "java",
             "request": "launch",
-            "mainClass": "${workspaceFolder}/TestJavaLaunch.java",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch1.java",
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal"
         },
@@ -126,7 +126,7 @@
             "name": "Test Java Launch: External Terminal (no op references)",
             "type": "java",
             "request": "launch",
-            "mainClass": "${workspaceFolder}/TestJavaLaunch.java",
+            "mainClass": "${workspaceFolder}/TestJavaLaunch1.java",
             "cwd": "${workspaceFolder}",
             "console": "externalTerminal"
         },
@@ -134,7 +134,7 @@
             "name": "Test Node Launch: Integrated Terminal (token tag)",
             "type": "node",
             "request": "launch",
-            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "program": "${workspaceFolder}/TestNodeLaunch1.js",
             "console": "integratedTerminal",
             "env": {
                 "SECRET_RESOLVER_TOKEN_TAG": "token/development",
@@ -147,7 +147,7 @@
             "name": "Test Node Launch: Integrated Terminal (token tag + account email)",
             "type": "node",
             "request": "launch",
-            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "program": "${workspaceFolder}/TestNodeLaunch1.js",
             "console": "integratedTerminal",
             "env": {
                 "SECRET_RESOLVER_TOKEN_TAG": "token/development",
@@ -161,7 +161,7 @@
             "name": "Test Node Launch: Integrated Terminal (token tag + account id)",
             "type": "node",
             "request": "launch",
-            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "program": "${workspaceFolder}/TestNodeLaunch1.js",
             "console": "integratedTerminal",
             "env": {
                 "SECRET_RESOLVER_TOKEN_TAG": "token/development",
@@ -175,7 +175,7 @@
             "name": "Test Node Launch: Integrated Terminal (token tag + account git config)",
             "type": "node",
             "request": "launch",
-            "program": "${workspaceFolder}/TestNodeLaunch.js",
+            "program": "${workspaceFolder}/TestNodeLaunch1.js",
             "console": "integratedTerminal",
             "env": {
                 "SECRET_RESOLVER_ACCOUNT_GIT_CONFIG": ".",

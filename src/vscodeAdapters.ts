@@ -1,6 +1,7 @@
 import * as vscode from "vscode"
 
 import type { Logger } from "./logger"
+import type { ResolverSettings, ResolverSettingsReader } from "./resolveLaunchConfig"
 import type { UserNotifier } from "./userNotifier"
 
 /**
@@ -33,5 +34,37 @@ export class WindowUserNotifier implements UserNotifier {
 
     showWarning(message: string): void {
         void vscode.window.showWarningMessage(message)
+    }
+}
+
+/**
+ * `ResolverSettingsReader` backed by the `secretResolver.*` VS Code settings.
+ * Read fresh on every launch, scoped to the launch folder so per-folder
+ * (project) settings apply on top of workspace and user settings. Blank
+ * settings are normalized to `undefined` so an unset default and an explicitly
+ * empty one behave identically.
+ */
+export class WorkspaceResolverSettingsReader implements ResolverSettingsReader {
+    read(workspacePath: string | undefined): ResolverSettings {
+        const resource = workspacePath !== undefined ? vscode.Uri.file(workspacePath) : undefined
+        const config = vscode.workspace.getConfiguration("secretResolver", resource)
+        const settings: ResolverSettings = {
+            accountId: WorkspaceResolverSettingsReader.readSetting(config, "accountId"),
+            accountGitConfig: WorkspaceResolverSettingsReader.readSetting(config, "accountGitConfig"),
+            accountEmail: WorkspaceResolverSettingsReader.readSetting(config, "accountEmail"),
+            tokenTag: WorkspaceResolverSettingsReader.readSetting(config, "tokenTag"),
+            signalOnStop: WorkspaceResolverSettingsReader.readSetting(config, "signalOnStop"),
+        }
+        return settings
+    }
+
+    private static readSetting(
+        config: vscode.WorkspaceConfiguration,
+        key: string,
+    ): string | undefined {
+        const raw = config.get<string>(key, "")
+        const trimmed = raw.trim()
+        const value = trimmed === "" ? undefined : trimmed
+        return value
     }
 }

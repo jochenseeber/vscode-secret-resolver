@@ -8,7 +8,7 @@ import {
     type OpInjectOptions,
     OpRunner,
 } from "../src/opRunner"
-import { type EnvFileReader, LaunchConfigResolver } from "../src/resolveLaunchConfig"
+import { type EnvFileReader, LaunchConfigResolver, type ResolverSettings } from "../src/resolveLaunchConfig"
 import { ResolverCache } from "../src/resolverCache"
 import { SecretCache } from "../src/secretCache"
 import { SECRET_RESOLVER_CONFIG_FIELD, type SecretResolverSessionConfig } from "../src/sessionConfig"
@@ -44,6 +44,7 @@ function makeResolver(options: {
     resolveAccountForEmail?: (email: string, signal?: AbortSignal) => Promise<string>
     resolveAccountForGitConfig?: (subdirectory: string, signal?: AbortSignal) => Promise<string>
     workspaceTrusted?: boolean
+    settings?: ResolverSettings
 }): { resolver: LaunchConfigResolver; recorder: Recorder; cache: SecretCache } {
     const recorder: Recorder = { errors: [], warnings: [] }
     const cache = options.cache ?? new SecretCache()
@@ -100,6 +101,7 @@ function makeResolver(options: {
         accountResolverFactory,
         tokenResolverFactory,
         { isTrusted: () => options.workspaceTrusted ?? true },
+        { read: () => options.settings ?? {} },
     )
 
     return { resolver, recorder, cache }
@@ -1020,5 +1022,241 @@ suite("LaunchConfigResolver", () => {
         assert.strictEqual(result, undefined)
         assert.strictEqual(recorder.errors.length, 1)
         assert.match(recorder.errors[0], /no matching 1Password account/)
+    })
+
+    test("settings.signalOnStop provides signal steps when no env var is set", async () => {
+        const { resolver } = makeResolver({
+            settings: { signalOnStop: "TERM+5:KILL" },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: { FOO: "bar" },
+        }
+        const result = await resolver.resolve(config, undefined)
+        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
+            | SecretResolverSessionConfig
+            | undefined
+        assert.deepStrictEqual(sessionConfig?.steps, [
+            { delaySec: 0, signal: "TERM" },
+            { delaySec: 5, signal: "KILL" },
+        ])
+    })
+
+    test("env SECRET_RESOLVER_SIGNAL_ON_STOP overrides settings.signalOnStop", async () => {
+        const { resolver } = makeResolver({
+            settings: { signalOnStop: "TERM+KILL" },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: { FOO: "bar", SECRET_RESOLVER_SIGNAL_ON_STOP: "INT" },
+        }
+        const result = await resolver.resolve(config, undefined)
+        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
+            | SecretResolverSessionConfig
+            | undefined
+        assert.deepStrictEqual(sessionConfig?.steps, [{ delaySec: 0, signal: "INT" }])
+    })
+
+    test("empty env SECRET_RESOLVER_SIGNAL_ON_STOP switches settings.signalOnStop off", async () => {
+        const { resolver } = makeResolver({
+            settings: { signalOnStop: "TERM+KILL" },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: { FOO: "bar", SECRET_RESOLVER_SIGNAL_ON_STOP: "" },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.ok(result)
+        assert.strictEqual(
+            SECRET_RESOLVER_CONFIG_FIELD in (result as Record<string, unknown>),
+            false,
+        )
+    })
+
+    test("settings.tokenTag is used as the token tag when no env var is set", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const tokenTagCalls: string[] = []
+        const { resolver } = makeResolver({
+            runner,
+            settings: { tokenTag: "settings-tag" },
+            resolveTokenForTag: async (tag) => {
+                tokenTagCalls.push(tag)
+                return "settings-token"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: { DB: "op://v/i/db" },
+        }
+        await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(tokenTagCalls, ["settings-tag"])
+        assert.strictEqual(runner.calls[0].token, "settings-token")
+    })
+
+    test("env SECRET_RESOLVER_TOKEN_TAG overrides settings.tokenTag", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const tokenTagCalls: string[] = []
+        const { resolver } = makeResolver({
+            runner,
+            settings: { tokenTag: "settings-tag" },
+            resolveTokenForTag: async (tag) => {
+                tokenTagCalls.push(tag)
+                return "tok"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: { DB: "op://v/i/db", SECRET_RESOLVER_TOKEN_TAG: "env-tag" },
+        }
+        await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(tokenTagCalls, ["env-tag"])
+    })
+
+    test("settings.accountId is used as the literal account when no env var is set", async () => {
+        const runner = new FakeRunner()
+        runner.nextResult = new Map([["op://v/i/db", "DB-VALUE"]])
+        const { resolver } = makeResolver({
+            runner,
+            settings: { accountId: "SETTINGS_ACCOUNT" },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "internalConsole",
+            env: { DB: "op://v/i/db" },
+        }
+        await resolver.resolve(config, undefined)
+        assert.strictEqual(runner.calls[0].account, "SETTINGS_ACCOUNT")
+    })
+
+    test("settings.accountEmail is resolved when no env var is set", async () => {
+        const emailCalls: string[] = []
+        const { resolver } = makeResolver({
+            settings: { accountEmail: "settings@example.com" },
+            resolveAccountForEmail: async (email) => {
+                emailCalls.push(email)
+                return "acct-from-settings-email"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: { FOO: "bar" },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(emailCalls, ["settings@example.com"])
+        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
+            | SecretResolverSessionConfig
+            | undefined
+        assert.strictEqual(sessionConfig?.accountId, "acct-from-settings-email")
+    })
+
+    test("settings.accountGitConfig is resolved when no env var is set", async () => {
+        const gitConfigCalls: string[] = []
+        const { resolver } = makeResolver({
+            settings: { accountGitConfig: "packages/api" },
+            resolveAccountForGitConfig: async (subdirectory) => {
+                gitConfigCalls.push(subdirectory)
+                return "acct-from-settings-git"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: { FOO: "bar" },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(gitConfigCalls, ["packages/api"])
+        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
+            | SecretResolverSessionConfig
+            | undefined
+        assert.strictEqual(sessionConfig?.accountId, "acct-from-settings-git")
+    })
+
+    test("env SECRET_RESOLVER_ACCOUNT_EMAIL overrides settings.accountEmail", async () => {
+        const emailCalls: string[] = []
+        const { resolver } = makeResolver({
+            settings: { accountEmail: "settings@example.com" },
+            resolveAccountForEmail: async (email) => {
+                emailCalls.push(email)
+                return "acct"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_EMAIL: "env@example.com" },
+        }
+        await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(emailCalls, ["env@example.com"])
+    })
+
+    test("an explicitly empty env var switches a setting-provided marker off", async () => {
+        const gitConfigCalls: string[] = []
+        const { resolver } = makeResolver({
+            settings: { accountGitConfig: "." },
+            resolveAccountForGitConfig: async (subdirectory) => {
+                gitConfigCalls.push(subdirectory)
+                return "acct-from-git"
+            },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: { FOO: "bar", SECRET_RESOLVER_ACCOUNT_GIT_CONFIG: "" },
+        }
+        await resolver.resolve(config, undefined)
+        assert.strictEqual(gitConfigCalls.length, 0)
+    })
+
+    test("settings.accountGitConfig takes priority over settings.accountEmail", async () => {
+        const emailCalls: string[] = []
+        const { resolver } = makeResolver({
+            settings: { accountGitConfig: ".", accountEmail: "settings@example.com" },
+            resolveAccountForEmail: async (email) => {
+                emailCalls.push(email)
+                return "acct-from-email"
+            },
+            resolveAccountForGitConfig: async () => "acct-from-git",
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            console: "integratedTerminal",
+            env: { FOO: "bar" },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.strictEqual(emailCalls.length, 0)
+        const sessionConfig = (result as Record<string, unknown>)[SECRET_RESOLVER_CONFIG_FIELD] as
+            | SecretResolverSessionConfig
+            | undefined
+        assert.strictEqual(sessionConfig?.accountId, "acct-from-git")
     })
 })

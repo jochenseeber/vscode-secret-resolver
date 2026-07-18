@@ -51,6 +51,31 @@ export interface WorkspaceTrustReader {
 }
 
 /**
+ * VS Code-settings defaults for the account/token launch markers. Each field
+ * mirrors one `SECRET_RESOLVER_*` marker; a matching env var in the launch
+ * always overrides the setting. Absent settings are `undefined`.
+ */
+export interface ResolverSettings {
+    accountId?: string
+    accountGitConfig?: string
+    accountEmail?: string
+    tokenTag?: string
+    signalOnStop?: string
+}
+
+/**
+ * Reads the resolver's marker-default settings. Implemented via
+ * `vscode.workspace.getConfiguration` in production (see `vscodeAdapters.ts`);
+ * tests inject fakes. Read fresh on every launch so setting edits take effect
+ * without rebuilding the resolver. `workspacePath` scopes the lookup to the
+ * launch's folder so per-folder (project) settings apply on top of workspace
+ * and user settings; it is `undefined` for launches with no folder.
+ */
+export interface ResolverSettingsReader {
+    read(workspacePath: string | undefined): ResolverSettings
+}
+
+/**
  * Result of parsing `SECRET_RESOLVER_SIGNAL_ON_STOP`: explicitly or
  * implicitly off, unparsable (warn and treat as off), or a step sequence.
  */
@@ -72,6 +97,7 @@ export class LaunchConfigResolver {
         private readonly accountResolverFactory: AccountResolverFactory,
         private readonly tokenResolverFactory: TokenResolverFactory,
         private readonly workspaceTrust: WorkspaceTrustReader,
+        private readonly settingsReader: ResolverSettingsReader,
     ) {}
 
     async resolve(
@@ -107,8 +133,14 @@ export class LaunchConfigResolver {
                 env.addAll(new StringEnvMap(launchEnv))
             }
 
+            const settings = this.settingsReader.read(workspacePath)
+
             const signalParse = LaunchConfigResolver.parseSignalOnStop(
-                env.getTrimmedValue(SIGNAL_ON_STOP_VAR),
+                LaunchConfigResolver.effectiveMarkerValue(
+                    env,
+                    SIGNAL_ON_STOP_VAR,
+                    settings.signalOnStop,
+                ),
             )
 
             if (signalParse.kind === "invalid") {
@@ -119,8 +151,12 @@ export class LaunchConfigResolver {
 
             const signalOnStop = signalParse.kind === "steps" ? signalParse.steps : null
 
-            const tokenTag = env.getTrimmedValue(TOKEN_TAG_VAR) || null
-            const accountId = await this.resolveLaunchAccount(env, workspacePath, signal)
+            const tokenTag = LaunchConfigResolver.effectiveMarkerValue(
+                env,
+                TOKEN_TAG_VAR,
+                settings.tokenTag,
+            ) || null
+            const accountId = await this.resolveLaunchAccount(env, settings, workspacePath, signal)
             const serviceAccountToken = await this.resolveServiceAccountToken(
                 env,
                 tokenTag,
@@ -174,12 +210,25 @@ export class LaunchConfigResolver {
 
     private async resolveLaunchAccount(
         env: StringEnvMap,
+        settings: ResolverSettings,
         workspacePath: string | undefined,
         signal?: AbortSignal,
     ): Promise<string | null> {
-        const gitSubdirectory = env.getTrimmedValue(ACCOUNT_GIT_CONFIG_VAR)
-        const email = env.getTrimmedValue(ACCOUNT_EMAIL_VAR)
-        const accountId = env.getTrimmedValue(ACCOUNT_ID_VAR)
+        const gitSubdirectory = LaunchConfigResolver.effectiveMarkerValue(
+            env,
+            ACCOUNT_GIT_CONFIG_VAR,
+            settings.accountGitConfig,
+        )
+        const email = LaunchConfigResolver.effectiveMarkerValue(
+            env,
+            ACCOUNT_EMAIL_VAR,
+            settings.accountEmail,
+        )
+        const accountId = LaunchConfigResolver.effectiveMarkerValue(
+            env,
+            ACCOUNT_ID_VAR,
+            settings.accountId,
+        )
 
         let resolver: AccountResolver
 
@@ -339,6 +388,26 @@ export class LaunchConfigResolver {
         }
 
         return out
+    }
+
+    /**
+     * Effective value for a launch marker. The env var wins when present — even
+     * when empty, so an explicit empty var switches the marker off — otherwise
+     * the VS Code setting default applies. Both are trimmed; an empty result
+     * reads as "unset" by the callers.
+     */
+    private static effectiveMarkerValue(
+        env: StringEnvMap,
+        key: string,
+        settingValue: string | undefined,
+    ): string | undefined {
+        if (env.hasKey(key)) {
+            const envValue = env.getTrimmedValue(key)
+            return envValue
+        }
+
+        const trimmedSetting = settingValue?.trim()
+        return trimmedSetting
     }
 
     /**
