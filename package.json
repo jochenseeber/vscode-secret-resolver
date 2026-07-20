@@ -78,7 +78,7 @@
         "@tabler/icons": "^3.45.0",
         "@types/mocha": "^10.0.10",
         "@types/node": "^22.20.1",
-        "@types/vscode": "^1.125.0",
+        "@types/vscode": "~1.116.0",
         "@vscode/debugprotocol": "^1.68.0",
         "@vscode/test-cli": "^0.0.15",
         "@vscode/test-electron": "^3.0.0",

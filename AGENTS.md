@@ -398,11 +398,14 @@ prefer `nx run stage:check` before concluding work.
 Assume Node.js 22+ and pnpm 10.33.0/Corepack are the baseline local tools. Node
 22 is the target everywhere: CI, `engines.node`, the Vite bundle target, and
 `@types/node` (pinned to 22.x to match the extension-host runtime of VS Code
-1.116, Node 22 — do not bump it past the runtime floor). Treat `op`, `git`,
-`gh`, and `xvfb-run` as workflow-specific rather than general setup
-requirements. Treat `package.json` as authoritative for extension name,
-version, and `engines.vscode`; build, release, and VS Code test configs derive
-from it where practical.
+1.116, Node 22 — do not bump it past the runtime floor). `@types/vscode` is
+likewise pinned to `~1.116.0`, the `engines.vscode` floor: `vsce package`
+rejects a declared `@types/vscode` range whose minimum exceeds
+`engines.vscode`, so a Dependabot bump past 1.116 breaks packaging — keep them
+in lockstep. Treat `op`, `git`, `gh`, and `xvfb-run` as workflow-specific
+rather than general setup requirements. Treat `package.json` as authoritative
+for extension name, version, and `engines.vscode`; build, release, and VS Code
+test configs derive from it where practical.
 
 For transitive security advisories where the upstream parent package has not
 yet released a fix, prefer a minimal `overrides` entry in `pnpm-workspace.yaml`
