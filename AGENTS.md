@@ -64,7 +64,7 @@ activation by checking the dir's `.pid` file against live PIDs.
   `OutputChannelLogger` (wraps the `Secret Resolver` `LogOutputChannel` created
   on activation), `WindowUserNotifier` (wraps `vscode.window` message popups),
   and `WorkspaceResolverSettingsReader` (`ResolverSettingsReader` reading the
-  `secretResolver.{accountId,accountGitConfig,accountEmail,tokenTag,signalOnStop}`
+  `secretResolver.{accountId,accountGitConfig,accountEmail,tokenTag,signalOnStop,sanitizeVars}`
   settings, scoped to the launch folder via
   `getConfiguration(section, Uri.file(path))` so per-folder settings apply;
   blank values normalized to `undefined`).
@@ -139,28 +139,35 @@ activation by checking the dir's `.pid` file against live PIDs.
   duplicating runtime validation in `debugAdapterProxy.ts` or re-exporting the
   contract from `resolveLaunchConfig.ts`.
 - `src/resolveLaunchConfig.ts` — `LaunchConfigResolver` plus the module-level
-  marker-var constants (`INTERNAL_VAR_PATTERN` `/^SECRET_RESOLVER_/` used to
-  strip internal keys, `SIGNAL_ON_STOP_VAR`, `TOKEN_TAG_VAR`,
-  `ACCOUNT_EMAIL_VAR`, `ACCOUNT_GIT_CONFIG_VAR`, `ACCOUNT_ID_VAR`) and the
-  `EnvFileReader` interface (`parse(path)`, implemented via `DotenvFile` in
-  `configProvider.ts`). The constructor takes typed collaborators only:
-  `ResolverCache`, `OpRunner`, `EnvFileReader`, `UserNotifier`,
-  `AccountResolverFactory`, `TokenResolverFactory`, `WorkspaceTrustReader`
-  (interface exported here; `vscode.workspace.isTrusted`-backed in
-  `configProvider.ts` — an untrusted workspace aborts any launch with an
-  `env`/`envFile` instead of resolving it, matching the
-  `untrustedWorkspaces: "limited"` declaration in `package.json`), and
-  `ResolverSettingsReader` (interface + `ResolverSettings` data type exported
-  here; `WorkspaceResolverSettingsReader`-backed in `configProvider.ts`, read
-  fresh per launch). The signal-on-stop value, the token tag, and the three
-  account markers are read via the
+  marker-var constants (`SIGNAL_ON_STOP_VAR`, `TOKEN_TAG_VAR`,
+  `ACCOUNT_EMAIL_VAR`, `ACCOUNT_GIT_CONFIG_VAR`, `ACCOUNT_ID_VAR`,
+  `SANITIZE_VARS_VAR`) and the `EnvFileReader` interface (`parse(path)`,
+  implemented via `DotenvFile` in `configProvider.ts`). The constructor takes
+  typed collaborators only: `ResolverCache`, `OpRunner`, `EnvFileReader`,
+  `UserNotifier`, `AccountResolverFactory`, `TokenResolverFactory`,
+  `WorkspaceTrustReader` (interface exported here;
+  `vscode.workspace.isTrusted`-backed in `configProvider.ts` — an untrusted
+  workspace aborts any launch with an `env`/`envFile` instead of resolving it,
+  matching the `untrustedWorkspaces: "limited"` declaration in `package.json`),
+  and `ResolverSettingsReader` (interface + `ResolverSettings` data type
+  exported here; `WorkspaceResolverSettingsReader`-backed in
+  `configProvider.ts`, read fresh per launch). The signal-on-stop value, the
+  token tag, and the three account markers are read via the
   `private static effectiveMarkerValue(env, key, settingValue)` helper: when
   the env key is present its trimmed value wins (an explicit empty var switches
   the marker off), otherwise the settings default applies; the existing
   git-config > email > id priority then runs over the effective account values.
-  The `op://`-ref check (`isOpRef` + `OP_REF_PATTERN`) and signal-on-stop
-  parsing (`parseSignalOnStop` + `DEFAULT_STEP_DELAY_SECONDS`, `STEP_PATTERN`)
-  live on the class as `private static` members; `parseSignalOnStop` returns a
+  Env-var stripping is governed solely by `SECRET_RESOLVER_SANITIZE_VARS` (a
+  regexp over variable names, effective value resolved the same way), compiled
+  by the instance `buildSanitizeMatcher`: unset (no env var and no setting) →
+  `DEFAULT_SANITIZE_PATTERN` `^(OP_|SECRET_RESOLVER_)` (kept in sync with the
+  `secretResolver.sanitizeVars` default in `package.json`); explicitly empty →
+  no stripping at all (markers included); invalid → warn and fall back to the
+  default. There is no separate always-on `SECRET_RESOLVER_*` strip — the
+  default pattern is what removes the markers. The `op://`-ref check
+  (`isOpRef` + `OP_REF_PATTERN`) and signal-on-stop parsing
+  (`parseSignalOnStop` + `DEFAULT_STEP_DELAY_SECONDS`, `STEP_PATTERN`) live on
+  the class as `private static` members; `parseSignalOnStop` returns a
   discriminated result (`off` / `invalid` / `steps`) so warning logic does not
   re-parse the raw value. Type-only `vscode` import so unit tests run without
   the extension host. `resolve()` orchestrates `readEnvFile`,
@@ -169,20 +176,20 @@ activation by checking the dir's `.pid` file against live PIDs.
   those steps rather than re-growing the entrypoint. It merges envFile + inline
   env (inline wins), **always** resolves every `op://` ref in-process via
   `OpRunner.inject` (caching plaintext in the `ResolverCache` ref namespace,
-  scoped by the launch's resolved account and token tag), strips every
-  `SECRET_RESOLVER_*` key, removes any pre-existing `__secretResolver` field
-  from the incoming config (the field is resolver-authored output, never
-  trusted input), replaces `config.env`, and deletes `config.envFile`. When
-  `SECRET_RESOLVER_TOKEN_TAG` is set and the env contains at least one `op://`
-  ref, it resolves the service-account token (via `TokenResolverFactory`) and
-  passes it to `inject` via `options.token` — in-process only; the token is
-  never handed to the tracker. If there are no refs the token lookup is
-  skipped. Account-resolution priority: `SECRET_RESOLVER_ACCOUNT_GIT_CONFIG` >
-  `SECRET_RESOLVER_ACCOUNT_EMAIL` > `SECRET_RESOLVER_ACCOUNT_ID`; the resolved
-  `accountId` is forwarded to both the token resolver and `inject`. When signal
-  steps are configured or `accountId` is non-null, the
-  `SessionConfigCodec.build` result is attached under
-  `SECRET_RESOLVER_CONFIG_FIELD` for the tracker to read.
+  scoped by the launch's resolved account and token tag), strips env vars
+  matching the sanitize pattern (default `OP_*` + `SECRET_RESOLVER_*`), removes
+  any pre-existing `__secretResolver` field from the incoming config (the field
+  is resolver-authored output, never trusted input), replaces `config.env`, and
+  deletes `config.envFile`. When `SECRET_RESOLVER_TOKEN_TAG` is set and the env
+  contains at least one `op://` ref, it resolves the service-account token (via
+  `TokenResolverFactory`) and passes it to `inject` via `options.token` —
+  in-process only; the token is never handed to the tracker. If there are no
+  refs the token lookup is skipped. Account-resolution priority:
+  `SECRET_RESOLVER_ACCOUNT_GIT_CONFIG` > `SECRET_RESOLVER_ACCOUNT_EMAIL` >
+  `SECRET_RESOLVER_ACCOUNT_ID`; the resolved `accountId` is forwarded to both
+  the token resolver and `inject`. When signal steps are configured or
+  `accountId` is non-null, the `SessionConfigCodec.build` result is attached
+  under `SECRET_RESOLVER_CONFIG_FIELD` for the tracker to read.
 - `src/configProvider.ts` — `SecretDebugConfigurationProvider`, the
   `vscode`-aware entry point
   (`resolveDebugConfigurationWithSubstitutedVariables`). Bridges
@@ -298,8 +305,13 @@ activation by checking the dir's `.pid` file against live PIDs.
   default for `SECRET_RESOLVER_TOKEN_TAG`.
 - `secretResolver.signalOnStop` (string, default `""`, `scope: "resource"`):
   default for `SECRET_RESOLVER_SIGNAL_ON_STOP`.
+- `secretResolver.sanitizeVars` (string, default `"^(OP_|SECRET_RESOLVER_)"`,
+  `scope: "resource"`): the sole env-var strip pattern, for
+  `SECRET_RESOLVER_SANITIZE_VARS`. Unlike the others its default is a non-blank
+  pattern; clearing it (or an empty env var) disables stripping entirely,
+  markers included.
 
-  These five are `resource`-scoped (user / workspace / per-folder) and read
+  These six are `resource`-scoped (user / workspace / per-folder) and read
   scoped to the launch folder by `WorkspaceResolverSettingsReader`. The
   matching `SECRET_RESOLVER_*` env var on a launch overrides the setting (an
   explicitly empty env var switches it off); blank settings are inert. Merge
@@ -312,9 +324,16 @@ activation by checking the dir's `.pid` file against live PIDs.
 
 ## Per-launch env vars
 
-The extension reads these marker env vars from the merged `env`/`envFile` map
-and strips every `SECRET_RESOLVER_*` key before the adapter sees them:
+The extension reads these marker env vars from the merged `env`/`envFile` map;
+they are removed before the adapter sees them by the sanitize pattern below
+(whose default matches `SECRET_RESOLVER_*`):
 
+- `SECRET_RESOLVER_SANITIZE_VARS` — regexp matched against variable **names**
+  to strip from the launch env. It is the only stripping applied. Overrides the
+  `secretResolver.sanitizeVars` setting (default `^(OP_|SECRET_RESOLVER_)`,
+  which removes both the markers and 1Password `OP_*` vars). Empty disables
+  stripping entirely (markers included); an unparsable pattern warns and falls
+  back to the default.
 - `SECRET_RESOLVER_MODE` — obsolete. No longer read; an explicit value (e.g.
   `"op"`) is silently ignored. Still stripped along with every other
   `SECRET_RESOLVER_*` key. The single resolution path always runs `op inject`

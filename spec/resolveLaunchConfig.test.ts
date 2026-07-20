@@ -1024,6 +1024,105 @@ suite("LaunchConfigResolver", () => {
         assert.match(recorder.errors[0], /no matching 1Password account/)
     })
 
+    test("sanitizeVars strips matching variable names from the final env", async () => {
+        const { resolver } = makeResolver({
+            settings: { sanitizeVars: "^(OP_|SECRET_RESOLVER_)" },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            env: {
+                KEEP: "yes",
+                OP_SERVICE_ACCOUNT_TOKEN: "secret",
+                OP_CONNECT_HOST: "http://localhost",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(result?.env, { KEEP: "yes" })
+    })
+
+    test("unset sanitizeVars applies the default, stripping OP_ and SECRET_RESOLVER_", async () => {
+        const { resolver } = makeResolver({})
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            env: {
+                KEEP: "yes",
+                OP_TOKEN: "gone",
+                SECRET_RESOLVER_TOKEN_TAG: "tag",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        // Nothing configured: the default pattern removes OP_ and SECRET_RESOLVER_.
+        assert.deepStrictEqual(result?.env, { KEEP: "yes" })
+    })
+
+    test("env SECRET_RESOLVER_SANITIZE_VARS overrides settings.sanitizeVars", async () => {
+        const { resolver } = makeResolver({
+            settings: { sanitizeVars: "^(OP_|SECRET_RESOLVER_)" },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            env: {
+                KEEP: "yes",
+                OP_TOKEN: "now-kept",
+                DROP_ME: "gone",
+                SECRET_RESOLVER_SANITIZE_VARS: "^(DROP_|SECRET_RESOLVER_)",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        // env pattern wins: DROP_ and the markers removed, OP_ now kept.
+        assert.deepStrictEqual(result?.env, { KEEP: "yes", OP_TOKEN: "now-kept" })
+    })
+
+    test("empty SECRET_RESOLVER_SANITIZE_VARS disables all stripping", async () => {
+        const { resolver } = makeResolver({
+            settings: { sanitizeVars: "^OP_" },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            env: {
+                KEEP: "yes",
+                OP_TOKEN: "kept",
+                SECRET_RESOLVER_TOKEN_TAG: "kept-too",
+                SECRET_RESOLVER_SANITIZE_VARS: "",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        // Disabling turns off every strip, so even the markers pass through.
+        assert.deepStrictEqual(result?.env, {
+            KEEP: "yes",
+            OP_TOKEN: "kept",
+            SECRET_RESOLVER_TOKEN_TAG: "kept-too",
+            SECRET_RESOLVER_SANITIZE_VARS: "",
+        })
+    })
+
+    test("invalid sanitizeVars regexp warns and falls back to the default pattern", async () => {
+        const { resolver, recorder } = makeResolver({
+            settings: { sanitizeVars: "[" },
+        })
+        const config = {
+            type: "node",
+            name: "x",
+            request: "launch",
+            env: {
+                KEEP: "yes",
+                OP_TOKEN: "should-be-dropped-by-default",
+            },
+        }
+        const result = await resolver.resolve(config, undefined)
+        assert.deepStrictEqual(result?.env, { KEEP: "yes" })
+        assert.strictEqual(recorder.warnings.length, 1)
+        assert.match(recorder.warnings[0], /invalid SECRET_RESOLVER_SANITIZE_VARS/)
+    })
+
     test("settings.signalOnStop provides signal steps when no env var is set", async () => {
         const { resolver } = makeResolver({
             settings: { signalOnStop: "TERM+5:KILL" },

@@ -54,6 +54,7 @@ export class WorkspaceResolverSettingsReader implements ResolverSettingsReader {
             accountEmail: WorkspaceResolverSettingsReader.readSetting(config, "accountEmail"),
             tokenTag: WorkspaceResolverSettingsReader.readSetting(config, "tokenTag"),
             signalOnStop: WorkspaceResolverSettingsReader.readSetting(config, "signalOnStop"),
+            sanitizeVars: WorkspaceResolverSettingsReader.readSetting(config, "sanitizeVars"),
         }
         return settings
     }

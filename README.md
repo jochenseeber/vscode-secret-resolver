@@ -30,14 +30,16 @@ resolve them when launching:
 
 If you provide an `envFile`, we parse it and merge it with the inline `env` —
 inline values win when there is a conflict. Either way, the adapter sees a
-clean environment with no `op://` references and no `SECRET_RESOLVER_*`
-variables.
+clean environment with no `op://` references and, by default, no
+`SECRET_RESOLVER_*` or `OP_*` variables.
 
 ## Configuration
 
 All per-launch configuration is done through `SECRET_RESOLVER_*` environment
-variables in `env` or `envFile`. We strip every one of them before the program
-sees its environment, so they are truly launch-only metadata.
+variables in `env` or `envFile`. By default we strip them — along with
+1Password `OP_*` variables — before the program sees its environment (see
+[Sanitizing variables](#sanitizing-variables-secret_resolver_sanitize_vars)),
+so they are launch-only metadata.
 
 Account selection, the service-account token tag, and the stop-signal sequence
 can also be set once, for all launches, through VS Code settings (see
@@ -208,6 +210,29 @@ extension locates the `op run` wrapper by its unique per-launch command line
 (via `pgrep`) and signals that process tree instead. If neither works, a
 warning is shown and nothing is signaled.
 
+### Sanitizing variables (`SECRET_RESOLVER_SANITIZE_VARS`)
+
+`SECRET_RESOLVER_SANITIZE_VARS` is a regular expression matched against
+variable **names** to strip from the launch environment before the program
+runs. It is the only stripping applied. The default, `^(OP_|SECRET_RESOLVER_)`,
+removes both the `SECRET_RESOLVER_*` markers and 1Password `OP_*` variables
+(e.g. an ambient `OP_SERVICE_ACCOUNT_TOKEN`) — so neither the markers nor a
+token you use only to resolve `op://` references leak into the program:
+
+```json
+{
+    "env": {
+        "SECRET_RESOLVER_SANITIZE_VARS": "^(OP_|SECRET_RESOLVER_|AWS_)",
+        "DATABASE_URL": "op://Development/Database/connection-string"
+    }
+}
+```
+
+The value overrides the `secretResolver.sanitizeVars` setting. An unparsable
+pattern warns and falls back to the default. Setting it (or the setting) to
+empty disables stripping entirely — including the `SECRET_RESOLVER_*` markers,
+so include them in any custom pattern if you want them removed.
+
 ### Extension settings
 
 - `secretResolver.opPath` (default `"op"`): the path to the 1Password CLI
@@ -225,8 +250,12 @@ warning is shown and nothing is signaled.
 - `secretResolver.signalOnStop`: a default
   [stop-signal sequence](#signal-on-stop-secret_resolver_signal_on_stop),
   mirroring `SECRET_RESOLVER_SIGNAL_ON_STOP`.
+- `secretResolver.sanitizeVars` (default `^(OP_|SECRET_RESOLVER_)`): a regexp
+  of variable
+  [names to sanitize](#sanitizing-variables-secret_resolver_sanitize_vars),
+  mirroring `SECRET_RESOLVER_SANITIZE_VARS`.
 
-These five settings have `resource` scope, so you can set them in user,
+These six settings have `resource` scope, so you can set them in user,
 workspace, or per-folder (project) settings; the most specific one wins, as
 usual for VS Code settings. For a given launch the corresponding
 `SECRET_RESOLVER_*` env var still overrides the resolved setting; an explicitly

@@ -54,6 +54,12 @@
                     "scope": "resource",
                     "type": "string"
                 },
+                "secretResolver.sanitizeVars": {
+                    "default": "^(OP_|SECRET_RESOLVER_)",
+                    "markdownDescription": "Regular expression matching environment-variable **names** to strip from the launch environment before the program sees it. This is the only stripping applied; the default removes 1Password (`OP_*`) and `SECRET_RESOLVER_*` variables. Overridden by the `SECRET_RESOLVER_SANITIZE_VARS` launch env var; clear it (or set the env var empty) to disable stripping entirely.",
+                    "scope": "resource",
+                    "type": "string"
+                },
                 "secretResolver.tokenTag": {
                     "default": "",
                     "markdownDescription": "Default tag of the \"API Credential\" vault item whose `credential` field is used as the service-account token for launches containing `op://` references. Overridden by the `SECRET_RESOLVER_TOKEN_TAG` launch env var.",

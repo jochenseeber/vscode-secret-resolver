@@ -20,8 +20,6 @@ import { StringEnvMap } from "./stringEnvMap"
 import type { TokenResolverFactory } from "./tokenResolver"
 import type { UserNotifier } from "./userNotifier"
 
-const INTERNAL_VAR_PATTERN = /^SECRET_RESOLVER_/
-
 const SIGNAL_ON_STOP_VAR = "SECRET_RESOLVER_SIGNAL_ON_STOP"
 
 const TOKEN_TAG_VAR = "SECRET_RESOLVER_TOKEN_TAG"
@@ -31,6 +29,8 @@ const ACCOUNT_EMAIL_VAR = "SECRET_RESOLVER_ACCOUNT_EMAIL"
 const ACCOUNT_GIT_CONFIG_VAR = "SECRET_RESOLVER_ACCOUNT_GIT_CONFIG"
 
 const ACCOUNT_ID_VAR = "SECRET_RESOLVER_ACCOUNT_ID"
+
+const SANITIZE_VARS_VAR = "SECRET_RESOLVER_SANITIZE_VARS"
 
 /**
  * Reads and parses a launch `envFile`. Implemented via `DotenvFile` in
@@ -61,6 +61,7 @@ export interface ResolverSettings {
     accountEmail?: string
     tokenTag?: string
     signalOnStop?: string
+    sanitizeVars?: string
 }
 
 /**
@@ -88,6 +89,8 @@ export class LaunchConfigResolver {
     private static readonly OP_REF_PATTERN = /^op:\/\//
     private static readonly DEFAULT_STEP_DELAY_SECONDS = 30
     private static readonly STEP_PATTERN = /^(?:([0-9]+):)?([a-zA-Z]+)$/
+    // Keep in sync with the `secretResolver.sanitizeVars` default in `package.json`.
+    private static readonly DEFAULT_SANITIZE_PATTERN = "^(OP_|SECRET_RESOLVER_)"
 
     constructor(
         private readonly cache: ResolverCache,
@@ -164,7 +167,11 @@ export class LaunchConfigResolver {
                 signal,
             )
 
-            env.deleteIf((key) => INTERNAL_VAR_PATTERN.test(key))
+            const sanitizeMatcher = this.buildSanitizeMatcher(
+                LaunchConfigResolver.effectiveMarkerValue(env, SANITIZE_VARS_VAR, settings.sanitizeVars),
+            )
+
+            env.deleteIf((key) => sanitizeMatcher !== null && sanitizeMatcher.test(key))
 
             const resolutionScope: RefResolutionScope = { accountId, tokenTag }
             const finalEnv = await this.resolveFinalEnv(
@@ -408,6 +415,37 @@ export class LaunchConfigResolver {
 
         const trimmedSetting = settingValue?.trim()
         return trimmedSetting
+    }
+
+    /**
+     * Compiles the effective `SECRET_RESOLVER_SANITIZE_VARS` value into the
+     * matcher over env-variable names to strip from the launch environment. It
+     * is the only stripping mechanism: an unset value (no env var and no
+     * setting) applies `DEFAULT_SANITIZE_PATTERN` (which removes `OP_*` and
+     * `SECRET_RESOLVER_*`); an explicitly empty value disables stripping
+     * entirely; an unparsable pattern warns and falls back to the default.
+     */
+    private buildSanitizeMatcher(source: string | undefined): RegExp | null {
+        if (source === undefined) {
+            const defaultMatcher = new RegExp(LaunchConfigResolver.DEFAULT_SANITIZE_PATTERN)
+            return defaultMatcher
+        }
+
+        if (source === "") {
+            return null
+        }
+
+        try {
+            const matcher = new RegExp(source)
+            return matcher
+        }
+        catch {
+            this.notifier.showWarning(
+                `invalid SECRET_RESOLVER_SANITIZE_VARS regexp; falling back to the default (${LaunchConfigResolver.DEFAULT_SANITIZE_PATTERN})`,
+            )
+            const fallback = new RegExp(LaunchConfigResolver.DEFAULT_SANITIZE_PATTERN)
+            return fallback
+        }
     }
 
     /**
