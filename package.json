@@ -130,7 +130,7 @@
     "main": "./dist/extension.js",
     "name": "vscode-secret-resolver",
     "packageManager": "pnpm@10.33.0",
-    "preview": true,
+    "preview": false,
     "publisher": "jochenseeber",
     "qna": "marketplace",
     "releaseBranchSuffix": "-dev",
@@ -139,5 +139,5 @@
         "type": "git",
         "url": "https://github.com/jochenseeber/vscode-secret-resolver"
     },
-    "version": "1.2.0-dev"
+    "version": "1.2.0"
 }
