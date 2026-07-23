@@ -2,8 +2,13 @@ allowBuilds:
   dprint: false
   esbuild: false
 
-# Security override for a transitive advisory: mocha (via @vscode/test-cli)
-# still declares serialize-javascript ^6.0.2. Remove once mocha ships a fixed
-# range.
+# Security overrides for transitive advisories. Remove each once the parent
+# package ships a fixed range.
+# - mocha (via @vscode/test-cli) still declares serialize-javascript ^6.0.2.
+# - nx pins axios 1.16.1 (< 1.18.0, the DoS/SSRF fix).
+# - brace-expansion 5.x below 5.0.7 is vulnerable; the 2.x still in the tree is
+#   unaffected, so the override is scoped to the 5.x range only.
 overrides:
   serialize-javascript: 7.0.5
+  axios: ^1.18.0
+  brace-expansion@5: ^5.0.7
