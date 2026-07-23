@@ -22,7 +22,7 @@ function readExactVscodeVersion() {
 }
 
 export default defineConfig({
-    files: "dist-test/test/**/*.test.js",
+    files: "dist-test/**/*.test.js",
     version: readExactVscodeVersion(),
     mocha: {
         ui: "tdd",

@@ -24,8 +24,8 @@
 /.env*
 \#*\#
 \#.*\#
-dist/
 dist-test/
+dist/
 node_modules/
 out/
 pkg/

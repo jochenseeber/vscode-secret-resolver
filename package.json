@@ -48,15 +48,15 @@
                     "description": "Path to the 1Password CLI binary. Looked up on PATH when unqualified.",
                     "type": "string"
                 },
-                "secretResolver.signalOnStop": {
-                    "default": "",
-                    "markdownDescription": "Default stop-signal sequence for terminal launches: `+`-separated steps, each an optional `N:` second delay then a signal name (`TERM`, `KILL`, `INT`, `HUP`; case-insensitive), e.g. `TERM+5:KILL`. `off` or empty disables. Overridden by the `SECRET_RESOLVER_SIGNAL_ON_STOP` launch env var.",
-                    "scope": "resource",
-                    "type": "string"
-                },
                 "secretResolver.sanitizeVars": {
                     "default": "^(OP_|SECRET_RESOLVER_)",
                     "markdownDescription": "Regular expression matching environment-variable **names** to strip from the launch environment before the program sees it. This is the only stripping applied; the default removes 1Password (`OP_*`) and `SECRET_RESOLVER_*` variables. Overridden by the `SECRET_RESOLVER_SANITIZE_VARS` launch env var; clear it (or set the env var empty) to disable stripping entirely.",
+                    "scope": "resource",
+                    "type": "string"
+                },
+                "secretResolver.signalOnStop": {
+                    "default": "",
+                    "markdownDescription": "Default stop-signal sequence for terminal launches: `+`-separated steps, each an optional `N:` second delay then a signal name (`TERM`, `KILL`, `INT`, `HUP`; case-insensitive), e.g. `TERM+5:KILL`. `off` or empty disables. Overridden by the `SECRET_RESOLVER_SIGNAL_ON_STOP` launch env var.",
                     "scope": "resource",
                     "type": "string"
                 },

@@ -16,7 +16,9 @@ jochen
 jochenseeber
 linecap
 linejoin
+liquibase
 malva
+metacharacter
 nullglob
 openvsx
 opsec
@@ -32,6 +34,7 @@ resvg
 rsvg
 seeber
 shopt
+socketpair
 subcmd
 tabler
 tmpfs

@@ -5,7 +5,7 @@
                 "--extensionDevelopmentPath=${workspaceFolder}",
                 "${workspaceFolder}/examples/env-vars"
             ],
-            "name": "Run with env vars",
+            "name": "Run extension (env-vars)",
             "outFiles": [
                 "${workspaceFolder}/dist/**/*.js"
             ],
@@ -18,7 +18,7 @@
                 "--extensionDevelopmentPath=${workspaceFolder}",
                 "${workspaceFolder}/examples/settings"
             ],
-            "name": "Run with settings",
+            "name": "Run extension (settings)",
             "outFiles": [
                 "${workspaceFolder}/dist/**/*.js"
             ],

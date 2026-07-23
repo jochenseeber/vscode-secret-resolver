@@ -1,9 +1,6 @@
 project:
   name: vscode-secret-resolver
-direnv: true
-git: true
-nx: true
-typescript: true
-vscode-extension: true
+typescript-project: true
+vscode-extension:
+  example-dir: examples/settings
 web: true
-yaml: true
